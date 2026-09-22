@@ -8,7 +8,7 @@ Local-first Windows 데스크톱 항공영상 변화탐지 학습데이터 검�
 
 ## 바로 실행
 
-Windows Portable은 이 저장소의 **Actions → Verify and build → 성공한 실행 → LLMChangeTool-Windows-Portable** artifact에서 받습니다. 압축을 모두 풀고 **LLMChangeTool.exe**를 실행하세요. `_internal` 폴더를 함께 유지해야 합니다. EXE는 코드 서명되지 않았습니다.
+Windows Portable은 [최신 GitHub Release](https://github.com/kosmos-s/-llm-change-tool-v2/releases/latest)에서 `LLMChangeTool-<버전>-Windows-Portable.zip`을 받습니다. 압축을 모두 풀고 `LLMChangeTool/LLMChangeTool.exe`를 실행하세요. `_internal` 폴더를 함께 유지해야 합니다. SHA256은 같은 Release의 `.sha256` 파일로 확인할 수 있습니다. EXE는 코드 서명되지 않았습니다.
 
 소스 실행은 Python **3.11 64비트**를 설치한 뒤:
 
@@ -59,7 +59,7 @@ cd ./-llm-change-tool-v2
 | Export | 계획 고정, Final Gate, 원본 호환 JSON, 이미지, manifest |
 | 팀 | ZIP manifest/해시 검증, NEW/SAME/CONFLICT, 명시적 충돌 해결 |
 | 평가 | DB 통계, label별 Precision/Recall/F1/F2, Golden 기준 Run 비교, 별도 모델 평가 |
-| 배포 | PyInstaller portable, Linux/Windows 테스트, Windows artifact 빌드 |
+| 배포 | PyInstaller portable, Linux/Windows 테스트, Windows GitHub Release |
 
 ## 검증 / 개발
 
