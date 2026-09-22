@@ -1,0 +1,67 @@
+name: Publish Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install -e . pyinstaller==6.22.3
+      - run: python -m PyInstaller --noconfirm --clean LLMChangeTool.spec
+      - name: Verify frozen application
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $core = Start-Process -FilePath dist/LLMChangeTool/LLMChangeTool.exe -ArgumentList '--self-test', '--report', 'dist/self-test.json' -Wait -PassThru
+          if ($core.ExitCode -ne 0) { throw 'Frozen self-test failed' }
+          $gui = Start-Process -FilePath dist/LLMChangeTool/LLMChangeTool.exe -ArgumentList '--gui-smoke', '--report', 'dist/gui-smoke.json' -Wait -PassThru
+          if ($gui.ExitCode -ne 0) { throw 'Frozen GUI test failed' }
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $version = python -c "from llm_change_tool import __version__; print(__version__)"
+          "VERSION=$version" >> $env:GITHUB_ENV
+          $zip = "LLMChangeTool-$version-Windows-Portable.zip"
+          Compress-Archive -Path dist/LLMChangeTool, dist/self-test.json, dist/gui-smoke.json -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  $zip" | Set-Content -Encoding ascii "$zip.sha256"
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: LLM Change Tool v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          body: |
+            Windows용 LLM Change Tool Portable 배포본입니다.
+
+            1. ZIP 파일을 새 폴더에 모두 압축 해제합니다.
+            2. `LLMChangeTool/LLMChangeTool.exe`를 실행합니다.
+            3. `_internal` 폴더는 EXE와 함께 유지합니다.
+
+            이 배포본은 합성 데이터 기반 Core self-test와 GUI/worker smoke test를 통과했습니다.
+          files: |
+            LLMChangeTool-${{ env.VERSION }}-Windows-Portable.zip
+            LLMChangeTool-${{ env.VERSION }}-Windows-Portable.zip.sha256

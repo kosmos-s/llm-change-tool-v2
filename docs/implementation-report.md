@@ -41,7 +41,7 @@ Streamlit UI, CSV 중심 상태 관리, checkpoint 파일 재개 방식, 출력 
 | Windows Portable | 위 실행에서 실제 `LLMChangeTool.exe` 빌드 및 frozen Core/GUI/worker 검사 모두 성공 |
 | 최신 브랜치 CI | [PR #1 Checks](https://github.com/kosmos-s/-llm-change-tool-v2/pull/1/checks)에 이후 38개 테스트와 Import 최적화를 포함한 실행 결과가 기록됨 |
 
-Windows artifact는 성공한 Actions 실행의 `LLMChangeTool-Windows-Portable`에서 받습니다. GitHub artifact 보관 기간은 14일이며, 만료 후 같은 workflow를 다시 실행하거나 `build_windows.bat`으로 빌드할 수 있습니다. 소스·설정·문서는 작업 브랜치와 PR에 보존됩니다.
+Windows 배포본은 [GitHub Releases](https://github.com/kosmos-s/-llm-change-tool-v2/releases/latest)의 `LLMChangeTool-<버전>-Windows-Portable.zip`에서 받습니다. 버전이 바뀌면 Windows 빌드와 동결 실행 파일 검증을 거쳐 새 Release가 자동 생성됩니다. ZIP의 SHA256 검증 파일도 함께 게시됩니다. 로컬에서는 `build_windows.bat`으로 같은 Portable 폴더를 만들 수 있습니다.
 
 ## 알려진 제한 및 실제 사용자 수용 테스트
 
