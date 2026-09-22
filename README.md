@@ -8,13 +8,13 @@ Local-first Windows 데스크톱 항공영상 변화탐지 학습데이터 검�
 
 ## 바로 실행
 
-Windows Portable은 [최신 GitHub Release](https://github.com/kosmos-s/-llm-change-tool-v2/releases/latest)에서 `LLMChangeTool-<버전>-Windows-Portable.zip`을 받습니다. 압축을 모두 풀고 `LLMChangeTool/LLMChangeTool.exe`를 실행하세요. `_internal` 폴더를 함께 유지해야 합니다. SHA256은 같은 Release의 `.sha256` 파일로 확인할 수 있습니다. EXE는 코드 서명되지 않았습니다.
+Windows Portable은 [최신 GitHub Release](https://github.com/kosmos-s/llm-change-tool-v2/releases/latest)에서 `LLMChangeTool-<버전>-Windows-Portable.zip`을 받습니다. 압축을 모두 풀고 `LLMChangeTool/LLMChangeTool.exe`를 실행하세요. `_internal` 폴더를 함께 유지해야 합니다. SHA256은 같은 Release의 `.sha256` 파일로 확인할 수 있습니다. EXE는 코드 서명되지 않았습니다.
 
 소스 실행은 Python **3.11 64비트**를 설치한 뒤:
 
 ```powershell
-git clone https://github.com/kosmos-s/-llm-change-tool-v2.git
-cd ./-llm-change-tool-v2
+git clone https://github.com/kosmos-s/llm-change-tool-v2.git
+cd ./llm-change-tool-v2
 ```
 
 최초 한 번 `setup.bat`, 이후 `run.bat`으로 시작합니다. 첫 설치에 인터넷이 필요합니다. Mock 검수 흐름에는 API 키가 필요하지 않습니다.
