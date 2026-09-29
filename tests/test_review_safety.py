@@ -60,7 +60,7 @@ def test_bilingual_review_survives_export_and_team_exchange(imported, tmp_path):
 
     output = Path(export_run(project, run)["path"])
     for s in samples:
-        data = json.loads((output / json.loads(s["paths"])["json"]).read_text())
+        data = json.loads((output / json.loads(s["paths"])["json"]).read_text(encoding="utf-8"))
         assert data["reason"] == "No change."
         assert data["reason_ko"] == "변화 없음"
     assert import_reviews(other, run, export_reviews(project, run)["path"])["NEW"] == 6
