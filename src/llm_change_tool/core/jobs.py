@@ -270,7 +270,9 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
             config.cost_limit = budget_limit(con, job_id, config.cost_limit)
             if job["state"] in ("COMPLETED", "CANCELLED"):
                 return {"state": job["state"]}
-        errors = verify_sources(project)
+        with transaction(project) as con:
+            mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
+        errors = verify_sources(project, mode)
         if errors:
             raise ValueError(f"Source integrity/quality errors: {len(errors)}")
         provider = provider or (

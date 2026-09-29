@@ -1,7 +1,7 @@
 import json
 from uuid import uuid4
 
-from llm_change_tool.core.datasets import verify_sources
+from llm_change_tool.core.datasets import blocking_issues, verify_sources
 from llm_change_tool.core.labels import digest
 from llm_change_tool.core.projects import now
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -10,7 +10,7 @@ from llm_change_tool.storage.store import execute, one, rows, transaction
 def create_plan(project, mode="pilot"):
     if mode not in ("pilot", "production"):
         raise ValueError("Invalid plan mode")
-    errors = verify_sources(project)
+    errors = verify_sources(project, mode)
     if errors:
         raise ValueError(
             f"Dataset quality errors: {len(errors)}; fix sources in a new project if changed"
@@ -63,7 +63,7 @@ def validate_plan(con, pid):
     )
     if not members or fp != plan["fingerprint"] or dataset["fingerprint"] != plan["dataset_hash"]:
         raise ValueError("Stale or invalid work plan")
-    if json.loads(dataset["quality"]):
+    if blocking_issues(json.loads(dataset["quality"]), plan["mode"]):
         raise ValueError("Dataset quality errors")
     if plan["mode"] == "production":
         if len(members) != 3000 or any(

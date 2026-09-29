@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from llm_change_tool import __version__
-from llm_change_tool.core.datasets import import_dataset
+from llm_change_tool.core.datasets import blocking_issues, import_dataset
 from llm_change_tool.core.exporting import export_run, final_gate
 from llm_change_tool.core.jobs import (
     RunConfig,
@@ -234,7 +234,7 @@ class MainWindow(ProjectWindow):
         forms = QHBoxLayout()
         left, right = QFormLayout(), QFormLayout()
         self.mode = QComboBox()
-        self.mode.addItem("시험용 · Mock 사용 가능", "pilot")
+        self.mode.addItem("시험용 · 품질 경고 허용 / Mock 가능", "pilot")
         self.mode.addItem("본작업 · split별 1,000건", "production")
         self.provider = QComboBox()
         self.provider.addItem("Mock · 무료 시험", "mock")
@@ -460,7 +460,8 @@ class MainWindow(ProjectWindow):
             self.analysis.set_result(value)
         if isinstance(value, dict) and "samples" in value and "errors" in value:
             self.dataset_hint.setText(
-                f"{value['samples']:,}건 · 품질 오류 {len(value['errors']):,}건"
+                f"{value['samples']:,}건 · 시험용 차단 {len(blocking_issues(value['errors'], 'pilot')):,}건 · "
+                f"품질 확인 사항 {len(value['errors']):,}건 (본작업은 엄격 검사)"
             )
         if after:
             try:
@@ -520,9 +521,11 @@ class MainWindow(ProjectWindow):
             )
             count = one(con, "SELECT count(*) AS n FROM samples")["n"]
             datasets = rows(con, "SELECT quality FROM datasets")
-        errors = len(json.loads(datasets[0]["quality"])) if datasets else 0
+        issues = json.loads(datasets[0]["quality"]) if datasets else []
+        errors = len(issues)
+        fatal = len(blocking_issues(issues, "pilot"))
         self.dataset_hint.setText(
-            f"{count:,}건 · 품질 오류 {errors:,}건"
+            f"{count:,}건 · 시험용 차단 {fatal:,}건 · 품질 확인 사항 {errors:,}건"
             if count
             else "아직 데이터를 가져오지 않았습니다."
         )

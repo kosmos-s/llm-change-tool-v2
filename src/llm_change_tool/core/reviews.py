@@ -9,6 +9,8 @@ from llm_change_tool.core.labels import (
     canonical,
     digest,
     effective_doc,
+    import_labels,
+    strict_json,
     validate_labels,
 )
 from llm_change_tool.core.projects import now
@@ -33,7 +35,8 @@ def compare_run(project, run_id):
         )
         required = 0
         for sample in items:
-            signals = []
+            _, source_issues = import_labels(strict_json(sample["original_raw"])[0])
+            signals = ["source_labels"] if source_issues else []
             prediction = sample["prediction"]
             if not prediction:
                 signals.append(

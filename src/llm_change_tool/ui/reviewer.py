@@ -34,6 +34,7 @@ from llm_change_tool.ui.image_view import ImageView
 from llm_change_tool.ui.tasks import Task
 
 SIGNALS = {
+    "source_labels": "원본 라벨 누락·모순 — 필수 검수",
     "change_mismatch": "변화 여부 불일치",
     "detail_mismatch": "세부 라벨 불일치",
     "low_confidence": "낮은 신뢰도",
@@ -328,7 +329,7 @@ class ReviewWidget(QWidget):
                 reason, english = "", ""
         self.loading = True
         for field in FIELDS:
-            self.boxes[field["key"]].setChecked(bool(field.get("fixed", labels[field["key"]])))
+            self.set_label_value(field, labels[field["key"]])
         self.reason.setPlainText(reason if isinstance(reason, str) else "")
         self.reason_en.setText(english if isinstance(english, str) else "")
         self.loading = False
@@ -413,13 +414,15 @@ class ReviewWidget(QWidget):
                 (1, original[f["key"]]),
                 (2, prediction["labels"][f["key"]] if prediction else None),
             ]:
-                item = QTableWidgetItem("변화" if value else "없음" if value is not None else "—")
+                item = QTableWidgetItem(
+                    "변화" if value else "없음" if value is not None else "미확정"
+                )
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setForeground(QColor("#126b65" if value else "#6b7b86"))
                 if different:
                     item.setBackground(QColor("#fff2d5"))
                 self.labels.setItem(i, col, item)
-            self.boxes[f["key"]].setChecked(bool(f.get("fixed", final[f["key"]])))
+            self.set_label_value(f, final[f["key"]])
         self.label_heading.setText(
             f"최종 라벨 · AI 신뢰도 {prediction['confidence']:.0%}"
             if prediction
@@ -536,10 +539,25 @@ class ReviewWidget(QWidget):
             self.index = max(0, min(len(self.items) - 1, self.index + offset))
             self.load_current()
 
+    def set_label_value(self, field, value):
+        box = self.boxes[field["key"]]
+        value = field.get("fixed", value)
+        box.setTristate(value is None)
+        box.setCheckState(
+            Qt.CheckState.PartiallyChecked
+            if value is None
+            else Qt.CheckState.Checked
+            if value
+            else Qt.CheckState.Unchecked
+        )
+
     def save(self, state="DONE", advance=False):
         if not self.items or self.loading or self.loaded_sample_id != self.items[self.index]["id"]:
             return False
         sample = self.items[self.index]
+        if any(box.checkState() == Qt.CheckState.PartiallyChecked for box in self.boxes.values()):
+            self.decision_hint.setText("미확정 라벨을 변화/없음으로 선택한 뒤 저장하세요.")
+            return False
         labels = {k: int(box.isChecked()) for k, box in self.boxes.items()}
         for f in FIELDS:
             if f.get("parent") and labels[f["key"]]:

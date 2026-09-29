@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from PIL import Image
 
-from llm_change_tool.core.labels import canonical, digest, original_labels, strict_json
+from llm_change_tool.core.labels import canonical, digest, import_labels, strict_json
 from llm_change_tool.core.projects import now
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
@@ -29,6 +29,27 @@ def safe_path(root: Path, relative: str):
     return result
 
 
+PILOT_WARNINGS = {"split_leakage", "duplicate_image", "source_labels"}
+
+
+def quality_issues(issues, mode):
+    if mode not in ("pilot", "production"):
+        raise ValueError("Invalid quality mode")
+    return [
+        dict(
+            issue,
+            severity="WARNING"
+            if mode == "pilot" and issue.get("error") in PILOT_WARNINGS
+            else "FATAL",
+        )
+        for issue in issues
+    ]
+
+
+def blocking_issues(issues, mode):
+    return [issue for issue in quality_issues(issues, mode) if issue["severity"] == "FATAL"]
+
+
 def scan_dataset(root: Path, progress=lambda value: None):
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -49,13 +70,21 @@ def scan_dataset(root: Path, progress=lambda value: None):
     image_keys, logical_keys, used_images = {}, set(), set()
     for index, path in enumerate(candidates):
         rel = path.relative_to(root).as_posix()
+        # Associate filenames before parsing so one rejected JSON does not create
+        # three derivative orphan errors. True unpaired images remain fatal.
+        stem = path.stem.removesuffix("_combined")
+        for suffix in ("_combined", "_left", "_right"):
+            for ext in (".jpg", ".jpeg"):
+                image = directory_files[path.parent].get((stem + suffix + ext).casefold())
+                if image:
+                    used_images.add(image.relative_to(root).as_posix())
         try:
             safe_path(root, rel)
             if path.stat().st_size > 2_000_000:
                 raise ValueError("JSON exceeds 2 MB")
             raw = path.read_bytes()
             doc, encoding = strict_json(raw)
-            labels = original_labels(doc)
+            labels, label_issues = import_labels(doc)
             parts = list(path.relative_to(root).parts)
             split_positions = [
                 i for i, p in enumerate(parts[:-1]) if p.lower() in ("train", "val", "test")
@@ -120,10 +149,20 @@ def scan_dataset(root: Path, progress=lambda value: None):
                         "path": rel,
                         "error": "split_leakage" if previous[0] != split else "duplicate_image",
                         "other": previous[1],
+                        "labels_match": previous[2] == labels,
                     }
                 )
             else:
-                image_keys[image_hash] = (split, rel)
+                image_keys[image_hash] = (split, rel, labels)
+            if label_issues:
+                errors.append(
+                    {
+                        "path": rel,
+                        "error": "source_labels",
+                        "details": label_issues,
+                        "review_required": True,
+                    }
+                )
             samples.append(
                 dict(
                     id=digest(key),
@@ -150,6 +189,7 @@ def scan_dataset(root: Path, progress=lambda value: None):
     if not samples:
         errors.append({"path": ".", "error": "No valid samples"})
     fingerprint = digest(sorted((s["logical_key"], json.loads(s["hashes"])) for s in samples))
+    errors = quality_issues(errors, "production")
     return samples, errors, fingerprint
 
 
@@ -189,7 +229,7 @@ def import_dataset(project, root: Path, progress=lambda value: None):
     }
 
 
-def verify_sources(project):
+def verify_sources(project, mode="production"):
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
@@ -210,7 +250,7 @@ def verify_sources(project):
     current = digest(sorted((s["logical_key"], json.loads(s["hashes"])) for s in samples))
     if current != dataset["fingerprint"]:
         errors.append({"error": "Dataset fingerprint mismatch"})
-    return errors
+    return blocking_issues(errors, mode)
 
 
 def sample_images(project, sample):

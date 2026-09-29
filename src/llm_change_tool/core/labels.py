@@ -85,11 +85,40 @@ def original_labels(doc):
     return validate_labels(result, policy=False)
 
 
+def import_labels(doc):
+    """Preserve unknown source values; only absent inactive details imply zero."""
+    result, issues = {}, []
+    for f in FIELDS:
+        value = doc
+        missing = False
+        for key in f["path"]:
+            if not isinstance(value, dict) or key not in value:
+                missing = True
+                break
+            value = value[key]
+        if missing and f.get("parent") and result.get(f["parent"]) == 0:
+            result[f["key"]] = 0
+            continue
+        try:
+            if missing:
+                raise ValueError("missing label")
+            result[f["key"]] = bit(value)
+        except ValueError:
+            result[f["key"]] = None
+            issues.append(f["key"] + ": missing or invalid label")
+    try:
+        validate_labels(result, policy=False)
+    except ValueError as exc:
+        issues.append(str(exc))
+    return result, issues
+
+
 def effective_doc(raw: bytes, labels: dict, reason: str, reason_en: str | None = None):
     validate_labels(labels)
     doc, _ = strict_json(raw)
     doc = copy.deepcopy(doc)
-    labels_changed = original_labels(doc) != labels
+    source_labels, source_issues = import_labels(doc)
+    labels_changed = bool(source_issues) or source_labels != labels
     if labels_changed and not reason.strip():
         raise ValueError("라벨을 수정한 경우 최종 판단의 한국어 근거를 입력하세요.")
     # A blank confirmation of unchanged labels preserves the original explanation.
@@ -98,8 +127,10 @@ def effective_doc(raw: bytes, labels: dict, reason: str, reason_en: str | None =
     for f in FIELDS:
         parent = doc
         for key in f["path"][:-1]:
+            if not isinstance(parent.get(key), dict):
+                parent[key] = {}
             parent = parent[key]
-        old = parent[f["path"][-1]]
+        old = parent.get(f["path"][-1], 0)
         value = labels[f["key"]]
         parent[f["path"][-1]] = (
             bool(value)
