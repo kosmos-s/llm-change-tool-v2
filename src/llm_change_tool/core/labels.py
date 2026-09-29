@@ -85,10 +85,16 @@ def original_labels(doc):
     return validate_labels(result, policy=False)
 
 
-def effective_doc(raw: bytes, labels: dict, reason: str):
+def effective_doc(raw: bytes, labels: dict, reason: str, reason_en: str | None = None):
     validate_labels(labels)
     doc, _ = strict_json(raw)
     doc = copy.deepcopy(doc)
+    labels_changed = original_labels(doc) != labels
+    if labels_changed and not reason.strip():
+        raise ValueError("라벨을 수정한 경우 최종 판단의 한국어 근거를 입력하세요.")
+    # A blank confirmation of unchanged labels preserves the original explanation.
+    korean = reason if reason.strip() else doc.get("reason_ko", "")
+    explanation_changed = labels_changed or korean != doc.get("reason_ko", "")
     for f in FIELDS:
         parent = doc
         for key in f["path"][:-1]:
@@ -100,7 +106,12 @@ def effective_doc(raw: bytes, labels: dict, reason: str):
             if isinstance(old, bool)
             else (value if type(old) is int else ("o" if value else "x"))
         )
-    doc["reason_ko"] = reason
+    doc["reason_ko"] = korean
+    # Never silently attach the source's English explanation to a different decision.
+    if reason_en is not None or explanation_changed:
+        doc["reason"] = reason_en or ""
+        if "reason_en" in doc:
+            doc["reason_en"] = reason_en or ""
     original_labels(doc)
     return doc
 

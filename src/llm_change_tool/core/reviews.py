@@ -3,7 +3,14 @@
 import json
 
 from llm_change_tool.core.jobs import validate_run
-from llm_change_tool.core.labels import KEYS, Prediction, canonical, digest, validate_labels
+from llm_change_tool.core.labels import (
+    KEYS,
+    Prediction,
+    canonical,
+    digest,
+    effective_doc,
+    validate_labels,
+)
 from llm_change_tool.core.projects import now
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
@@ -92,6 +99,7 @@ def append_review(
     state="DONE",
     expected_revision=None,
     origin="local",
+    reason_en=None,
 ):
     if state not in ("DONE", "DEFERRED", "DRAFT"):
         raise ValueError("Invalid review state")
@@ -100,6 +108,11 @@ def append_review(
         raise ValueError("Reviewer name is required (max 120 chars)")
     if len(reason) > 10000:
         raise ValueError("Reason too long")
+    if reason_en is not None and (not isinstance(reason_en, str) or len(reason_en) > 10000):
+        raise ValueError("영문 근거는 최대 10,000자입니다.")
+    if state == "DONE":
+        sample = one(con, "SELECT original_raw FROM samples WHERE id=:id", id=sample_id)
+        effective_doc(sample["original_raw"], labels, reason, reason_en)
     comparison = one(
         con,
         "SELECT * FROM comparisons WHERE run_id=:run AND sample_id=:sid",
@@ -113,8 +126,8 @@ def append_review(
     result = execute(
         con,
         """INSERT INTO reviews(sample_id,run_id,state,labels,reason,reviewer,
-        previous_revision,result_hash,origin,created_at)
-        VALUES (:sid,:run,:state,:labels,:reason,:reviewer,:prev,:hash,:origin,:time)""",
+        previous_revision,result_hash,origin,created_at,reason_en)
+        VALUES (:sid,:run,:state,:labels,:reason,:reviewer,:prev,:hash,:origin,:time,:english)""",
         sid=sample_id,
         run=run_id,
         state=state,
@@ -125,45 +138,118 @@ def append_review(
         hash=comparison["result_hash"],
         origin=origin,
         time=now(),
+        english=reason_en,
     )
     return result.lastrowid
 
 
 def save_review(
-    project, run_id, sample_id, labels, reason, reviewer, state="DONE", expected_revision=None
+    project,
+    run_id,
+    sample_id,
+    labels,
+    reason,
+    reviewer,
+    state="DONE",
+    expected_revision=None,
+    reason_en=None,
 ):
     with transaction(project) as con:
         return append_review(
-            con, run_id, sample_id, labels, reason, reviewer, state, expected_revision
+            con,
+            run_id,
+            sample_id,
+            labels,
+            reason,
+            reviewer,
+            state,
+            expected_revision,
+            reason_en=reason_en,
         )
 
 
-def undo_review(project, run_id, sample_id, reviewer):
+def _represented_review(con, review):
+    """Resolve an audit entry to the historical state it restored, including v2 undo."""
+    while review:
+        target = rows(
+            con,
+            "SELECT target_revision FROM review_undo_targets WHERE revision=:id",
+            id=review["revision"],
+        )
+        if target:
+            revision = target[0]["target_revision"]
+        elif review["origin"] == "undo":
+            # v2 undo restored the state before the revision it appended to.
+            previous = one(
+                con, "SELECT * FROM reviews WHERE revision=:id", id=review["previous_revision"]
+            )
+            revision = previous["previous_revision"]
+        else:
+            return review
+        review = (
+            one(con, "SELECT * FROM reviews WHERE revision=:id", id=revision) if revision else None
+        )
+    return None
+
+
+def undo_review(project, run_id, sample_id, reviewer, expected_revision=None):
     with transaction(project) as con:
         current = latest_review(con, run_id, sample_id)
         if not current:
             raise ValueError("No review to undo")
-        if current["previous_revision"]:
-            previous = one(
-                con, "SELECT * FROM reviews WHERE revision=:id", id=current["previous_revision"]
+        if expected_revision is not None and current["revision"] != expected_revision:
+            raise ValueError("Review changed since loading. Reload before saving.")
+        represented = _represented_review(con, current)
+        if not represented:
+            raise ValueError("원본까지 되돌렸습니다. 더 이전 기록이 없습니다.")
+        previous = (
+            _represented_review(
+                con,
+                one(
+                    con,
+                    "SELECT * FROM reviews WHERE revision=:id",
+                    id=represented["previous_revision"],
+                ),
             )
+            if represented["previous_revision"]
+            else None
+        )
+        if previous:
             labels = json.loads(previous["labels"])
             reason = previous["reason"]
             state = previous["state"]
+            reason_en = previous["reason_en"]
         else:
             sample = one(con, "SELECT * FROM samples WHERE id=:id", id=sample_id)
             labels = json.loads(sample["original_labels"])
             reason = "Undo to original"
             state = "DRAFT"
+            reason_en = None
             # Preserve excluded legacy labels in original, but new drafts follow the current policy.
             from llm_change_tool.core.labels import FIELDS
 
             for f in FIELDS:
                 if "fixed" in f:
                     labels[f["key"]] = f["fixed"]
-        return append_review(
-            con, run_id, sample_id, labels, reason, reviewer, state, current["revision"], "undo"
+        revision = append_review(
+            con,
+            run_id,
+            sample_id,
+            labels,
+            reason,
+            reviewer,
+            state,
+            current["revision"],
+            "undo",
+            reason_en=reason_en,
         )
+        execute(
+            con,
+            "INSERT INTO review_undo_targets VALUES (:id,:target)",
+            id=revision,
+            target=previous["revision"] if previous else None,
+        )
+        return revision
 
 
 def review_queue(project, run_id, filter_name="all"):
@@ -171,7 +257,8 @@ def review_queue(project, run_id, filter_name="all"):
         result = rows(
             con,
             """SELECT s.*,c.required,c.signals,c.result_hash,r.prediction,
-            v.state review_state,v.revision,v.labels reviewed_labels,v.reason reviewed_reason,v.reviewer
+            v.state review_state,v.revision,v.labels reviewed_labels,v.reason reviewed_reason,v.reason_en reviewed_reason_en,v.reviewer,
+            coalesce(v.result_hash=c.result_hash,0) review_current
             FROM samples s JOIN comparisons c ON c.sample_id=s.id AND c.run_id=:run
             LEFT JOIN llm_results r ON r.sample_id=s.id AND r.run_id=:run
             LEFT JOIN reviews v ON v.revision=(SELECT max(revision) FROM reviews
@@ -180,12 +267,36 @@ def review_queue(project, run_id, filter_name="all"):
             run=run_id,
         )
     if filter_name == "unreviewed":
-        return [s for s in result if s["review_state"] not in ("DONE", "DEFERRED")]
+        return [
+            s
+            for s in result
+            if not s["review_current"] or s["review_state"] not in ("DONE", "DEFERRED")
+        ]
     if filter_name == "deferred":
         return [s for s in result if s["review_state"] == "DEFERRED"]
     if filter_name == "required":
-        return [s for s in result if s["required"] and s["review_state"] != "DONE"]
+        return [
+            s
+            for s in result
+            if s["required"] and (s["review_state"] != "DONE" or not s["review_current"])
+        ]
     return result
+
+
+def review_summary(project, run_id):
+    """Count the whole run, independently of the visible review filter."""
+    with transaction(project) as con:
+        return one(
+            con,
+            """SELECT count(*) total,
+            coalesce(sum(CASE WHEN c.required=1 AND NOT (coalesce(v.state,'')='DONE' AND coalesce(v.result_hash,'')=c.result_hash) THEN 1 ELSE 0 END),0) required_remaining,
+            coalesce(sum(CASE WHEN v.state='DONE' AND v.result_hash=c.result_hash THEN 1 ELSE 0 END),0) completed,
+            coalesce(sum(CASE WHEN v.state='DEFERRED' THEN 1 ELSE 0 END),0) deferred
+            FROM comparisons c LEFT JOIN reviews v ON v.revision=(SELECT max(revision)
+            FROM reviews WHERE run_id=c.run_id AND sample_id=c.sample_id)
+            WHERE c.run_id=:run""",
+            run=run_id,
+        )
 
 
 def review_history(project, run_id, sample_id):

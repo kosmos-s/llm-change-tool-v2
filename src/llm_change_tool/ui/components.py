@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from llm_change_tool.ui.feedback import explain_error
+
 STATES = {
     "PENDING": "대기",
     "RUNNING": "분석 중",
@@ -54,6 +56,7 @@ FIELDS = {
     "total": "계획 항목",
     "ai_success": "AI 성공",
     "human_complete": "사람 검수 완료",
+    "english_reason_missing": "영문 근거 미입력 (선택 항목)",
     "review_decisions": "최종 결정 완료",
 }
 
@@ -213,7 +216,7 @@ class ResultPanel(QFrame):
                 done = counts.get("COMPLETED", 0)
                 summary = f"{STATES.get(value['state'], value['state'])} · {done:,} / {total:,}건 분석 완료"
                 if value.get("message"):
-                    summary += "\n" + value["message"]
+                    summary += "\n" + explain_error(value["message"])
                 level = "warning" if value["state"] in ("FAILED", "PAUSED") else "info"
                 self.progress.setRange(0, max(total, 1))
                 self.progress.setValue(done)
@@ -226,6 +229,10 @@ class ResultPanel(QFrame):
                         f"${usage.get('cost', 0):.4f} / ${usage.get('reserved', 0):.4f}",
                     )
                 ]
+                if "cost_limit" in value:
+                    rows.append(("현재 누적 예산 한도", f"${value['cost_limit']:.4f}"))
+                for failure in value.get("failures", []):
+                    rows.append((f"실패 {failure['count']:,}건", explain_error(failure["error"])))
             elif "current" in value and "total" in value:
                 summary, level = (
                     f"데이터 확인 중 · {value['current']:,} / {value['total']:,}건",

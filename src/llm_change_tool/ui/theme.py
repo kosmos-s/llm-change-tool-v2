@@ -14,6 +14,7 @@ QLabel#pageTitle { font-size: 26px; font-weight: 700; color: #142c3c; }
 QLabel#sectionTitle { font-size: 17px; font-weight: 700; color: #183648; }
 QLabel#muted { color: #526777; }
 QLabel#eyebrow { color: #176a67; font-size: 11px; font-weight: 700; }
+QLabel#reviewSummary { color: #176a67; font-size: 14px; font-weight: 600; }
 QLabel#badge { color: #12605d; background: #e0f2ed; border-radius: 6px; padding: 7px 12px; }
 QLabel#metricValue { font-size: 27px; font-weight: 700; color: #133d45; }
 QFrame#card { background: #ffffff; border: 1px solid #dce5eb; border-radius: 12px; }

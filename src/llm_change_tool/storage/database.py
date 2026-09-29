@@ -5,10 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from llm_change_tool.storage.schema_v2 import SQL
+from llm_change_tool.storage.schema_v3 import SQL as SQL_V3
 
 APPLICATION_ID = 0x4C435432  # LCT2
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIGRATIONS = {
+    3: SQL_V3,
     2: SQL,
     1: (
         "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",

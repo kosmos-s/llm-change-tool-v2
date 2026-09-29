@@ -34,6 +34,7 @@ def gate_in_transaction(con, run_id):
         "deferred": 0,
         "review_required": 0,
         "human_complete": 0,
+        "english_reason_missing": 0,
     }
     for sample in samples:
         sid = sample["id"]
@@ -94,11 +95,17 @@ def gate_in_transaction(con, run_id):
             reason = ""
         try:
             validate_labels(labels)
-            doc = effective_doc(sample["original_raw"], labels, reason) if review else None
+            doc = (
+                effective_doc(sample["original_raw"], labels, reason, review["reason_en"])
+                if review
+                else None
+            )
         except ValueError as exc:
             problems.append(prefix + ": effective JSON error: " + str(exc))
             continue
         counts["review_decisions"] += 1
+        if doc and doc.get("reason_ko") and not doc.get("reason"):
+            counts["english_reason_missing"] += 1
         effective.append((sample, review, doc))
     conflicts = execute(
         con, "SELECT count(*) FROM merge_conflicts WHERE run_id=:run AND state='OPEN'", run=run_id
@@ -175,6 +182,9 @@ def export_run(project, run_id, destination: Path | None = None):
                             "sample_id": sample["id"],
                             "logical_key": sample["logical_key"],
                             "review_revision": review["revision"] if review else None,
+                            "english_reason_missing": bool(
+                                doc and doc.get("reason_ko") and not doc.get("reason")
+                            ),
                             "files": file_hashes,
                             "source_hashes": hashes,
                         }

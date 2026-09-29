@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -31,6 +32,7 @@ from llm_change_tool.core.jobs import (
     job_info,
     recover_jobs,
     run_job,
+    update_budget,
 )
 from llm_change_tool.core.labels import prompt_text
 from llm_change_tool.core.plans import create_plan
@@ -69,6 +71,7 @@ class MainWindow(ProjectWindow):
         self.job_id = None
         self.run_id = None
         self.job_state = None
+        self.job_provider = None
         self.pipeline_buttons = []
         self.task_page = 1
         self.task_error = False
@@ -194,7 +197,19 @@ class MainWindow(ProjectWindow):
         self.start_button.setText(
             "분석 완료" if self.job_state == "COMPLETED" else "분석 시작 / 이어하기"
         )
+        self.reopen_button.setEnabled(
+            bool(self.job_id) and not busy and self.job_state == "CANCELLED"
+        )
+        self.budget_button.setEnabled(
+            bool(self.job_id)
+            and not busy
+            and self.job_provider == "openai"
+            and self.job_state in ("PENDING", "PAUSED", "FAILED")
+        )
         if hasattr(self, "project_chip"):
+            self.retry_button.setEnabled(
+                bool(self.job_id) and not busy and self.job_state == "FAILED"
+            )
             self.project_chip.setText(self.project.name if self.project else "프로젝트 선택 전")
             self.project_chip.setToolTip(str(self.project.root) if self.project else "")
 
@@ -290,6 +305,15 @@ class MainWindow(ProjectWindow):
             "생성된 작업은 당시의 모델·프롬프트·비용 설정으로 실행됩니다.", "muted"
         )
         content.addWidget(self.selected_run_hint)
+        budget_bar = QHBoxLayout()
+        self.budget_button = self.button(
+            "선택 작업 예산 변경", self.change_budget, budget_bar, requires="run"
+        )
+        budget_bar.addWidget(text_label("완료 결과를 유지하며 예산만 변경합니다.", "muted"), 1)
+        self.retry_button = self.button(
+            "실패 항목 재시도 준비", lambda: self.control("retry"), budget_bar, requires="run"
+        )
+        content.addLayout(budget_bar)
         bar = QHBoxLayout()
         self.start_button = self.button(
             "분석 시작 / 이어하기", self.start_job, bar, primary=True, requires="run"
@@ -313,6 +337,9 @@ class MainWindow(ProjectWindow):
             "강제 종료된 작업 복구",
             lambda: self.background(lambda p: recover_jobs(self.project)),
             recovery_bar,
+        )
+        self.reopen_button = self.button(
+            "취소 작업 다시 열기", lambda: self.control("reopen"), recovery_bar, requires="run"
         )
         recovery_bar.addStretch()
         content.addWidget(Foldout("재시도 · 중단 작업 복구", recovery))
@@ -412,7 +439,12 @@ class MainWindow(ProjectWindow):
     def show_progress(self, value):
         if isinstance(value, dict) and "state" in value:
             self.job_state = value["state"]
+            self.job_provider = value.get("provider")
             self.refresh_actions()
+            if "cost_limit" in value:
+                self.selected_run_hint.setText(
+                    f"선택 작업 · {value['provider']} / {value['model']} · 예산 ${value['cost_limit']:.4f} · 모델·프롬프트 유지"
+                )
         message = self.log.set_result(value)
         if hasattr(self, "activity"):
             self.activity.setText(message)
@@ -574,6 +606,30 @@ class MainWindow(ProjectWindow):
                 self.show_progress(job_info(self.project, self.job_id))
             except Exception as exc:
                 self._error(exc)
+
+    def change_budget(self):
+        if not self.job_id:
+            return
+        current = job_info(self.project, self.job_id)["cost_limit"]
+        limit, ok = QInputDialog.getDouble(
+            self,
+            "선택 작업 예산 변경",
+            "새 누적 한도 (USD) · 기존 사용액 포함",
+            current,
+            0.0001,
+            1000,
+            4,
+        )
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, "예산 변경 이력", "변경 사유")
+        if ok:
+            job_id = self.job_id
+            self.background(
+                lambda p: update_budget(
+                    self.project, job_id, limit, expected_limit=current, reason=reason
+                )
+            )
 
     def compare(self):
         if self.run_id:

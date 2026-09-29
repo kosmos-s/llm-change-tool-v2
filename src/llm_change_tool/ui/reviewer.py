@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
+    QLayout,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -20,9 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from llm_change_tool.core.datasets import sample_images
-from llm_change_tool.core.labels import FIELDS
-from llm_change_tool.core.reviews import review_history, review_queue, save_review, undo_review
-from llm_change_tool.ui.components import STATES, Foldout, card, role, text_label, tone
+from llm_change_tool.core.labels import FIELDS, effective_doc, strict_json
+from llm_change_tool.core.reviews import (
+    review_history,
+    review_queue,
+    review_summary,
+    save_review,
+    undo_review,
+)
+from llm_change_tool.ui.components import STATES, Foldout, card, role, scroll_page, text_label, tone
 from llm_change_tool.ui.image_view import ImageView
 from llm_change_tool.ui.tasks import Task
 
@@ -33,6 +40,7 @@ SIGNALS = {
     "review_required": "AI가 검수 요청",
     "malformed_output": "응답 형식 오류",
     "api_error": "AI 호출 오류",
+    "API_error": "AI 호출 오류",
     "pending": "분석 대기",
 }
 
@@ -48,6 +56,7 @@ class ReviewWidget(QWidget):
         self.loading = False
         self.task = None
         self.images = None
+        self.loaded_sample_id = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -63,6 +72,10 @@ class ReviewWidget(QWidget):
             self.filter.addItem(title, value)
         self.filter.currentIndexChanged.connect(self.reload)
         top.addWidget(self.filter)
+        self.reload_button = QPushButton("새로고침")
+        self.reload_button.setToolTip("현재 목록과 이미지를 다시 불러옵니다.")
+        self.reload_button.clicked.connect(self.reload)
+        top.addWidget(self.reload_button)
         self.reviewer = QLineEdit()
         self.reviewer.setPlaceholderText("검수자 이름을 입력하세요")
         self.reviewer.setAccessibleName("검수자 이름")
@@ -78,6 +91,8 @@ class ReviewWidget(QWidget):
         self.progress = text_label("항목 없음", "badge")
         top.addWidget(self.progress)
         layout.addLayout(top)
+        self.summary = text_label("전체 0 · 필수 검수 남음 0 · 완료 0 · 보류 0", "reviewSummary")
+        layout.addWidget(self.summary)
         self.identity = text_label(
             "AI 분석 후 ‘비교하고 검수하기’를 눌러 검수 목록을 만드세요.", "muted"
         )
@@ -116,7 +131,22 @@ class ReviewWidget(QWidget):
         splitter.addWidget(viewer)
         panel, pl = card("최종 라벨 확정")
         self.label_heading = pl.itemAt(0).widget()
-        panel.setMinimumWidth(386)
+        panel.setMinimumWidth(370)
+        pl.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        choices = QHBoxLayout()
+        self.original_button = QPushButton("원본 유지")
+        self.ai_button = QPushButton("AI 라벨 적용")
+        self.edit_button = QPushButton("직접 수정")
+        for button, source in [
+            (self.original_button, "original"),
+            (self.ai_button, "ai"),
+            (self.edit_button, "manual"),
+        ]:
+            button.clicked.connect(lambda checked=False, source=source: self.apply_labels(source))
+            choices.addWidget(button)
+        pl.addLayout(choices)
+        self.decision_hint = text_label("라벨 선택 후 ‘저장’으로 확정하세요.", "muted")
+        pl.addWidget(self.decision_hint)
         self.labels = QTableWidget(len(FIELDS), 4)
         self.labels.setHorizontalHeaderLabels(["라벨", "원본", "AI", "최종"])
         self.labels.verticalHeader().hide()
@@ -124,7 +154,8 @@ class ReviewWidget(QWidget):
         self.labels.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.labels.setShowGrid(False)
         self.labels.setAlternatingRowColors(True)
-        self.labels.setMinimumHeight(120)
+        self.labels.setFixedHeight(len(FIELDS) * 32 + 48)
+        self.labels.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.boxes = {}
         for i, field in enumerate(FIELDS):
             item = QTableWidgetItem(field["title"])
@@ -149,13 +180,16 @@ class ReviewWidget(QWidget):
         for i in (1, 2, 3):
             self.labels.setColumnWidth(i, 51)
         self.labels.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        pl.addWidget(self.labels, 1)
         self.ai_reason = text_label("AI 분석 결과가 여기에 표시됩니다.", "muted")
-        self.ai_reason.setMaximumHeight(90)
+        self.ai_reason.setMaximumHeight(64)
+        pl.addWidget(self.ai_reason)
+        pl.addWidget(self.labels)
         notes = QWidget()
         note_layout = QVBoxLayout(notes)
         note_layout.setContentsMargins(0, 0, 0, 0)
-        note_layout.addWidget(self.ai_reason)
+        self.ai_details = text_label("", "muted")
+        self.ai_details.setMaximumHeight(65)
+        note_layout.addWidget(self.ai_details)
         self.reason = QTextEdit()
         self.reason.setPlaceholderText("최종 판단의 근거를 기록하세요.")
         self.reason.setAccessibleName("검수 근거")
@@ -163,9 +197,26 @@ class ReviewWidget(QWidget):
         self.reason.setMaximumHeight(90)
         self.reason.textChanged.connect(self.changed)
         note_layout.addWidget(self.reason)
+        self.reason_en = QLineEdit()
+        self.reason_en.setPlaceholderText("영문 근거 (선택)")
+        self.reason_en.setAccessibleName("검수 영문 근거")
+        self.reason_en.setToolTip(
+            "라벨·한국어 근거를 바꾸면 기존 영문을 비웁니다. 필요한 경우 새 근거를 입력하세요."
+        )
+        self.reason_en.textChanged.connect(lambda: self.changed(invalidate_english=False))
+        note_layout.addWidget(self.reason_en)
         self.notes = Foldout("AI 판단 근거 · 검수 메모", notes)
         pl.addWidget(self.notes)
-        splitter.addWidget(panel)
+        self.panel_scroll = scroll_page(panel)
+        self.panel_scroll.setMinimumWidth(400)
+        splitter.addWidget(self.panel_scroll)
+        self.notes.toggle.toggled.connect(
+            lambda expanded: (
+                QTimer.singleShot(0, lambda: self.panel_scroll.ensureWidgetVisible(self.reason_en))
+                if expanded
+                else None
+            )
+        )
         splitter.setSizes([780, 410])
         layout.addWidget(splitter, 1)
         self.signals = text_label("")
@@ -245,10 +296,57 @@ class ReviewWidget(QWidget):
         self.index = min(self.index, max(0, len(self.items) - 1))
         self.load_current()
 
-    def changed(self, *args):
+    def update_summary(self):
+        counts = (
+            review_summary(self.project, self.run_id)
+            if self.project and self.run_id
+            else dict.fromkeys(("total", "required_remaining", "completed", "deferred"), 0)
+        )
+        self.summary.setText(
+            f"전체 {counts['total']:,} · 필수 검수 남음 {counts['required_remaining']:,} · 완료 {counts['completed']:,} · 보류 {counts['deferred']:,}"
+        )
+
+    def apply_labels(self, source):
+        if not self.items or self.loaded_sample_id != self.items[self.index]["id"]:
+            return
+        if source == "manual":
+            self.labels.setFocus()
+            self.decision_hint.setText("최종 열에서 라벨을 수정하고 근거를 기록하세요.")
+            self.notes.toggle.setChecked(True)
+            return
+        sample = self.items[self.index]
+        doc, _ = strict_json(sample["original_raw"])
+        if source == "ai":
+            if not sample["prediction"]:
+                return
+            prediction = json.loads(sample["prediction"])
+            labels, reason, english = prediction["labels"], prediction["reason"], ""
+        else:
+            labels = json.loads(sample["original_labels"])
+            reason, english = doc.get("reason_ko", ""), doc.get("reason", "")
+            if any("fixed" in field and labels[field["key"]] != field["fixed"] for field in FIELDS):
+                reason, english = "", ""
+        self.loading = True
+        for field in FIELDS:
+            self.boxes[field["key"]].setChecked(bool(field.get("fixed", labels[field["key"]])))
+        self.reason.setPlainText(reason if isinstance(reason, str) else "")
+        self.reason_en.setText(english if isinstance(english, str) else "")
+        self.loading = False
+        self.changed(invalidate_english=False)
+        self.decision_hint.setText(
+            ("원본" if source == "original" else "AI") + " 라벨 선택 · 아직 검수 완료가 아닙니다."
+        )
+        self.notes.toggle.setChecked(True)
+
+    def changed(self, *args, invalidate_english=True):
         if self.loading:
             return
+        if invalidate_english:
+            self.reason_en.blockSignals(True)
+            self.reason_en.clear()
+            self.reason_en.blockSignals(False)
         self.dirty = True
+        self.decision_hint.setText("수정 중 · ‘저장’을 눌러 확정하세요.")
         if self.auto.isChecked():
             self.timer.start()
 
@@ -261,6 +359,17 @@ class ReviewWidget(QWidget):
         self.flash.stop()
         self.flicker.setChecked(False)
         self.loading = True
+        self.panel_scroll.verticalScrollBar().setValue(0)
+        self.update_summary()
+        self.decision_hint.setText("라벨 선택 후 ‘저장’으로 확정하세요.")
+        self.loaded_sample_id = None
+        self.images = None
+        for view in (self.left, self.right):
+            view.placeholder = (
+                "이미지를 불러오는 중입니다." if self.items else "검수 항목을 선택하세요."
+            )
+            view.scene().clear()
+            view.viewport().update()
         for button in self.buttons:
             button.setEnabled(bool(self.items))
         self.labels.setEnabled(bool(self.items))
@@ -271,8 +380,10 @@ class ReviewWidget(QWidget):
             self.left.scene().clear()
             self.right.scene().clear()
             self.ai_reason.clear()
+            self.ai_details.clear()
             self.label_heading.setText("최종 라벨 확정")
             self.reason.clear()
+            self.reason_en.clear()
             for box in self.boxes.values():
                 box.setChecked(False)
             self.progress.setText("항목 없음")
@@ -283,6 +394,7 @@ class ReviewWidget(QWidget):
                 self.labels.item(i, 0).setBackground(QColor("#ffffff"))
             self.loading = False
             self.dirty = False
+            self.image_task_finished()
             return
         sample = self.items[self.index]
         self.identity.setText(sample["logical_key"])
@@ -313,12 +425,30 @@ class ReviewWidget(QWidget):
             if prediction
             else "최종 라벨 · AI 결과 없음"
         )
-        self.reason.setPlainText(sample["reviewed_reason"] or "")
-        self.ai_reason.setText(
-            f"AI 신뢰도 {prediction['confidence']:.0%} · {prediction['reason']}"
-            if prediction
-            else "AI 결과 없음"
+        original_doc, _ = strict_json(sample["original_raw"])
+        self.reason.setPlainText(
+            sample["reviewed_reason"]
+            if sample["review_state"]
+            else original_doc.get("reason_ko", "")
         )
+        # Read the effective explanation so legacy reviews cannot display stale English.
+        try:
+            doc = effective_doc(
+                sample["original_raw"],
+                final,
+                self.reason.toPlainText(),
+                sample["reviewed_reason_en"],
+            )
+            english = doc.get("reason", "")
+        except ValueError:
+            english = sample["reviewed_reason_en"] or ""
+        self.reason_en.setText(english if isinstance(english, str) else "")
+        reason_text = prediction["reason"] if prediction else "AI 결과 없음"
+        self.ai_reason.setText(
+            "AI 근거 · " + (reason_text[:110] + "…" if len(reason_text) > 110 else reason_text)
+        )
+        self.ai_details.setText(reason_text)
+        self.ai_details.setToolTip(reason_text)
         self.ai_reason.setToolTip(prediction["reason"] if prediction else "AI 결과 없음")
         flags = json.loads(sample["signals"])
         self.signals.setText(
@@ -339,15 +469,46 @@ class ReviewWidget(QWidget):
         if self.task:
             self.task.deleteLater()
         self.task = Task(load, self)
-        self.task.done.connect(self.images_loaded)
-        self.task.failed.connect(lambda message: self.status.setText("이미지 오류: " + message))
-        self.task.finished.connect(lambda: self.setEnabled(True))
+        self.task.done.connect(lambda frames: self.images_loaded(frames, sample["id"]))
+        self.task.failed.connect(self.images_failed)
+        self.task.finished.connect(self.image_task_finished)
         self.task.start()
 
-    def images_loaded(self, frames):
+    def image_task_finished(self):
+        self.setEnabled(True)
+        ready = bool(self.items) and self.loaded_sample_id == self.items[self.index]["id"]
+        self.labels.setEnabled(ready)
+        self.reason.setEnabled(ready)
+        self.reason_en.setEnabled(ready)
+        self.original_button.setEnabled(ready)
+        self.ai_button.setEnabled(ready and bool(self.items[self.index]["prediction"]))
+        self.edit_button.setEnabled(ready)
+        self.diff.setEnabled(ready)
+        self.flicker.setEnabled(ready)
+        for i, button in enumerate(self.buttons):
+            button.setEnabled(bool(self.items) if i in (0, 1, 4) else ready)
+
+    def images_failed(self, message):
+        self.loaded_sample_id = None
+        self.images = None
+        for view in (self.left, self.right):
+            view.placeholder = "이미지를 불러오지 못했습니다.\n파일과 데이터 경로를 확인하세요."
+            view.scene().clear()
+            view.viewport().update()
+        self.status.setText(
+            "이미지 오류 · 저장을 차단했습니다. 파일을 복구한 뒤 목록을 다시 불러오세요.\n"
+            + message
+        )
+        tone(self.status, "error")
+
+    def images_loaded(self, frames, sample_id):
+        if not self.items or self.items[self.index]["id"] != sample_id:
+            return
         self.images = [
             QImage(data, w, h, w * 3, QImage.Format.Format_RGB888).copy() for data, w, h in frames
         ]
+        self.loaded_sample_id = sample_id
+        tone(self.status, "info")
         self.show_images()
         self.left.fit()
 
@@ -369,12 +530,14 @@ class ReviewWidget(QWidget):
             self.right.display(self.images[self.flash_index])
 
     def move(self, offset):
+        if self.task and self.task.isRunning():
+            return
         if self.items and self.flush():
             self.index = max(0, min(len(self.items) - 1, self.index + offset))
             self.load_current()
 
     def save(self, state="DONE", advance=False):
-        if not self.items or self.loading:
+        if not self.items or self.loading or self.loaded_sample_id != self.items[self.index]["id"]:
             return False
         sample = self.items[self.index]
         labels = {k: int(box.isChecked()) for k, box in self.boxes.items()}
@@ -391,11 +554,13 @@ class ReviewWidget(QWidget):
                 self.reviewer.text(),
                 state,
                 sample["revision"],
+                reason_en=self.reason_en.text(),
             )
             sample.update(
                 revision=revision,
                 reviewed_labels=json.dumps(labels),
                 reviewed_reason=self.reason.toPlainText(),
+                reviewed_reason_en=self.reason_en.text(),
                 review_state=state,
             )
             self.dirty = False
@@ -408,6 +573,14 @@ class ReviewWidget(QWidget):
             self.progress.setText(
                 f"{self.index + 1} / {len(self.items)} · {STATES.get(state, state)}"
             )
+            self.update_summary()
+            if state != "DRAFT" and self.filter.currentData() != "all":
+                updated = review_queue(self.project, self.run_id, self.filter.currentData())
+                if not any(s["id"] == sample["id"] for s in updated):
+                    self.items = updated
+                    self.index = min(self.index, max(0, len(updated) - 1))
+                    self.load_current()
+                    return True
             if advance:
                 self.move(1)
             return True
@@ -416,11 +589,22 @@ class ReviewWidget(QWidget):
             return False
 
     def undo(self):
-        if not self.items:
+        if not self.items or (self.task and self.task.isRunning()):
             return
         try:
+            if self.dirty:
+                self.dirty = False
+                self.timer.stop()
+                self.load_current()
+                return
             sample = self.items[self.index]
-            undo_review(self.project, self.run_id, sample["id"], self.reviewer.text())
+            undo_review(
+                self.project,
+                self.run_id,
+                sample["id"],
+                self.reviewer.text(),
+                expected_revision=sample["revision"],
+            )
             self.dirty = False
             self.reload()
         except Exception as exc:
