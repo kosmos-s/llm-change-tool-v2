@@ -206,7 +206,7 @@ def preparation_preview(project, run_id):
             included.append((sample, doc, review["revision"] if review else None))
         if not included:
             problems.append("포함할 데이터가 없습니다.")
-        counts = Counter(s["split"] for s, _, _ in included if s["source"] == "errors")
+        counts = Counter(s["split"] for s, _, _ in included)
         report = {
             "included": len(included),
             "excluded": len(excluded),

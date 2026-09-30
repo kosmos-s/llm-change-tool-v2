@@ -1,3 +1,4 @@
+import shutil
 from collections import Counter
 
 import pytest
@@ -12,6 +13,18 @@ from llm_change_tool.storage.store import execute, transaction
 
 def test_production_fixes_exactly_3000_ids(tmp_path):
     root = synthetic(tmp_path / "data", 3003)
+    # The production population contains both the regular dataset and the
+    # company-provided error candidates. Move alternating samples so every
+    # split contains both sources without duplicating any logical sample.
+    for index, json_path in enumerate(sorted(root.rglob("*.json"))):
+        if index % 2:
+            continue
+        split = next(part for part in json_path.parts if part in ("train", "val", "test"))
+        destination = root / "dataset" / split / "general"
+        destination.mkdir(parents=True, exist_ok=True)
+        image_path = json_path.with_suffix(".jpg")
+        shutil.move(json_path, destination / json_path.name)
+        shutil.move(image_path, destination / image_path.name)
     # Unique synthetic provenance even where the tiny rendered image repeats.
     for path in root.rglob("*.jpg"):
         with path.open("ab") as stream:
@@ -23,7 +36,13 @@ def test_production_fixes_exactly_3000_ids(tmp_path):
         _, members = validate_plan(con, plan_id)
     assert len({sample["id"] for sample in members}) == 3000
     assert Counter(sample["split"] for sample in members) == dict(train=1000, val=1000, test=1000)
-    assert {sample["source"] for sample in members} == {"errors"}
+    assert {sample["source"] for sample in members} == {"dataset", "errors"}
+    source_counts = Counter(sample["source"] for sample in members)
+    assert abs(source_counts["dataset"] - source_counts["errors"]) <= 1
+    for split in ("train", "val", "test"):
+        split_sources = Counter(sample["source"] for sample in members if sample["split"] == split)
+        assert set(split_sources) == {"dataset", "errors"}
+        assert abs(split_sources["dataset"] - split_sources["errors"]) <= 1
     assert create_plan(project, "production") == plan_id
     with pytest.raises(ValueError, match="actual OpenAI"):
         create_job(project, plan_id, RunConfig())
