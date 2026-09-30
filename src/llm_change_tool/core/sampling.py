@@ -16,6 +16,10 @@ def pilot_stratum(sample):
     return "/".join((sample["source"], sample["split"], stratum(sample)))
 
 
+def source_stratum(sample):
+    return "/".join((sample["source"], stratum(sample)))
+
+
 def _balanced_sample(samples, count, seed, group_key):
     if not 0 <= count <= len(samples):
         raise ValueError("Invalid sample count")
@@ -44,22 +48,28 @@ def balanced_pilot_sample(samples, count, seed):
     return _balanced_sample(samples, count, seed, pilot_stratum)
 
 
-def distribution(samples, *, pilot=False):
-    key = pilot_stratum if pilot else lambda sample: sample["split"] + "/" + stratum(sample)
+def balanced_source_sample(samples, count, seed):
+    return _balanced_sample(samples, count, seed, source_stratum)
+
+
+def distribution(samples, *, include_source=False):
+    key = (
+        pilot_stratum if include_source else lambda sample: sample["split"] + "/" + stratum(sample)
+    )
     return dict(sorted(Counter(key(sample) for sample in samples).items()))
 
 
-def selection_report(samples, selected, seed, *, pilot=False, requested_count=None):
+def selection_report(samples, selected, seed, *, include_source=False, requested_count=None):
     return {
         "algorithm": (
-            "balanced-source-split-error-label-v1" if pilot else "balanced-error-label-v1"
+            "balanced-source-split-error-label-v1" if include_source else "balanced-error-label-v1"
         ),
         "seed": str(seed),
         "candidate_count": len(samples),
         "requested_count": requested_count,
         "selected_count": len(selected),
-        "candidates": distribution(samples, pilot=pilot),
-        "selected": distribution(selected, pilot=pilot),
+        "candidates": distribution(samples, include_source=include_source),
+        "selected": distribution(selected, include_source=include_source),
         "selected_ids_hash": digest(sorted(s["id"] for s in selected)),
         "note": "Strata are balanced, not population-proportional; do not interpret as population performance.",
     }

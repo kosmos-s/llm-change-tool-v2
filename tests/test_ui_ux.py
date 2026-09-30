@@ -197,6 +197,10 @@ def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
     window.key_visibility.click()
     assert window.key.echoMode() == window.key.EchoMode.Normal
     assert window.key_visibility.text() == "숨기기"
+    window.mode.setCurrentIndex(window.mode.findData("production"))
+    assert "dataset+errors 전체" in window.selection_hint.text()
+    assert "train·val·test 각 1,000건" in window.selection_hint.text()
+    assert "$7.8000" in window.cost_preview.text()
     window.close()
     app.processEvents()
 

@@ -517,7 +517,8 @@ class MainWindow(ProjectWindow):
             return
         if self.mode.currentData() == "production":
             self.selection_hint.setText(
-                "본작업은 errors의 train·val·test에서 각 1,000건, 총 3,000건을 균형 추출합니다."
+                "본작업은 dataset+errors 전체에서 train·val·test 각 1,000건을 "
+                "출처·오류 유형·라벨별로 균형 추출합니다."
             )
             return
         count = self.pilot_count.currentText().strip() or "?"

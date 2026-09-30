@@ -6,7 +6,7 @@ from llm_change_tool.core.labels import canonical, digest
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.sampling import (
     balanced_pilot_sample,
-    balanced_sample,
+    balanced_source_sample,
     selection_report,
 )
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -16,12 +16,13 @@ def _select_samples(samples, mode, seed, sample_count):
     if mode == "production":
         selected = []
         for split in ("train", "val", "test"):
-            group = [s for s in samples if s["source"] == "errors" and s["split"] == split]
+            group = [s for s in samples if s["split"] == split]
             if len(group) < 1000:
-                raise ValueError(f"errors/{split}: at least 1000 valid samples required")
-            selected.extend(balanced_sample(group, 1000, seed))
-        candidates = [s for s in samples if s["source"] == "errors"]
-        return selected, selection_report(candidates, selected, seed)
+                raise ValueError(f"{split}: at least 1000 valid samples required")
+            selected.extend(balanced_source_sample(group, 1000, seed))
+        return selected, selection_report(
+            samples, selected, seed, include_source=True, requested_count=3000
+        )
     if sample_count is None:
         return samples, None
     if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count <= 0:
@@ -29,7 +30,7 @@ def _select_samples(samples, mode, seed, sample_count):
     selected_count = min(sample_count, len(samples))
     selected = balanced_pilot_sample(samples, selected_count, seed)
     return selected, selection_report(
-        samples, selected, seed, pilot=True, requested_count=sample_count
+        samples, selected, seed, include_source=True, requested_count=sample_count
     )
 
 
@@ -110,8 +111,7 @@ def validate_plan(con, pid):
         raise ValueError("Dataset quality errors")
     if plan["mode"] == "production":
         if len(members) != 3000 or any(
-            sum(s["source"] == "errors" and s["split"] == split for s in members) != 1000
-            for split in ("train", "val", "test")
+            sum(s["split"] == split for s in members) != 1000 for split in ("train", "val", "test")
         ):
-            raise ValueError("Production plan must have exactly 1000 errors per split")
+            raise ValueError("Production plan must have exactly 1000 samples per split")
     return plan, members
