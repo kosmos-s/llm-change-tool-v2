@@ -144,7 +144,35 @@ def test_existing_openai_job_reveals_credentials_without_api_call(imported):
     assert window.api_settings.isVisible()
     assert window.model.currentData() == "test-model"
     assert "test-model" in window.selected_run_hint.text()
+    assert "API Key" in window.api_readiness.text()
     assert window.start_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_openai_consent_is_visible_and_missing_requirement_gets_focus(imported):
+    app = QApplication.instance() or QApplication([])
+    project, _ = imported
+    config = RunConfig(provider="openai", input_price=1, output_price=2)
+    create_job(project, create_plan(project), config)
+    window = MainWindow()
+    window.show()
+    window.set_project(project)
+    window.navigate(1)
+    app.processEvents()
+    messages = []
+    window._error = lambda exc: messages.append(str(exc))
+    window.key.setText("test-key")
+    assert "유료 분석 시작" in window.start_button.text()
+    window.start_job()
+    app.processEvents()
+    assert "동의가 필요" in messages[-1]
+    assert window.approve_api.property("attention") is True
+    assert window.approve_api.hasFocus()
+    window.approve_api.setChecked(True)
+    assert window.approve_api.property("attention") is False
+    assert "실행 준비 완료" in window.api_readiness.text()
+    assert "checkmark.svg" in app.styleSheet()
     window.close()
     app.processEvents()
 
@@ -161,6 +189,14 @@ def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
     window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
     assert "입력 $0.1" in window.model_price_hint.text()
     assert "출력 $0.5" in window.model_price_hint.text()
+    assert "50건" in window.cost_preview.text()
+    assert "$0.1300" in window.cost_preview.text()
+    window.budget.setValue(0.1)
+    assert "한도 부족 가능" in window.cost_preview.text()
+    assert window.key.echoMode() == window.key.EchoMode.Password
+    window.key_visibility.click()
+    assert window.key.echoMode() == window.key.EchoMode.Normal
+    assert window.key_visibility.text() == "숨기기"
     window.close()
     app.processEvents()
 
