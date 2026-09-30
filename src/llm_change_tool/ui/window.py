@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabWidget,
     QTextEdit,
@@ -43,6 +44,8 @@ from llm_change_tool.ui.components import (
     Foldout,
     ResultPanel,
     card,
+    job_progress,
+    percent_text,
     role,
     scroll_page,
     text_label,
@@ -312,6 +315,18 @@ class MainWindow(ProjectWindow):
             "생성된 작업은 당시의 모델·프롬프트·비용 설정으로 실행됩니다.", "muted"
         )
         content.addWidget(self.selected_run_hint)
+        progress_header = QHBoxLayout()
+        self.job_progress_label = text_label("진행률 · 작업을 선택하세요.", "muted")
+        self.job_progress_percent = text_label("0%", "badge", wrap=False)
+        progress_header.addWidget(self.job_progress_label, 1)
+        progress_header.addWidget(self.job_progress_percent)
+        content.addLayout(progress_header)
+        self.job_progress = QProgressBar()
+        self.job_progress.setRange(0, 1)
+        self.job_progress.setValue(0)
+        self.job_progress.setTextVisible(False)
+        self.job_progress.setAccessibleName("선택한 AI 작업 진행률")
+        content.addWidget(self.job_progress)
         budget_bar = QHBoxLayout()
         self.budget_button = self.button(
             "선택 작업 예산 변경", self.change_budget, budget_bar, requires="run"
@@ -449,6 +464,15 @@ class MainWindow(ProjectWindow):
             self.job_state = value["state"]
             self.job_provider = value.get("provider")
             self.refresh_actions()
+            if "counts" in value:
+                processed, total, completed, failed, percent = job_progress(value["counts"])
+                label = percent_text(percent)
+                self.job_progress.setRange(0, max(total, 1))
+                self.job_progress.setValue(processed)
+                self.job_progress_percent.setText(label)
+                self.job_progress_label.setText(
+                    f"진행률 · {processed:,} / {total:,}건 처리 · 성공 {completed:,}건 · 실패 {failed:,}건"
+                )
             if "cost_limit" in value:
                 self.selected_run_hint.setText(
                     f"선택 작업 · {value['provider']} / {value['model']} · 예산 ${value['cost_limit']:.4f} · 모델·프롬프트 유지"
@@ -595,6 +619,10 @@ class MainWindow(ProjectWindow):
         else:
             self.job_id = self.run_id = self.job_state = None
             self.selected_run_hint.setText("작업을 만든 뒤 분석을 시작하세요.")
+            self.job_progress.setRange(0, 1)
+            self.job_progress.setValue(0)
+            self.job_progress_percent.setText("0%")
+            self.job_progress_label.setText("진행률 · 작업을 선택하세요.")
             self.review_widget.bind(None, None)
         self.refresh_actions()
 

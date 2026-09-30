@@ -33,6 +33,8 @@ def test_reopen_selects_existing_job_and_clears_other_project_results(imported, 
     assert window.job_id == job and window.run_id == run
     assert len(window.review_widget.items) == 6
     assert not window.start_button.isEnabled()  # Completed jobs need no rerun.
+    assert window.job_progress_percent.text() == "100%"
+    assert window.job_progress.value() == window.job_progress.maximum() == 6
     assert "6" in window.dataset_hint.text()
     window.results.set_result({"passed": True, "counts": {}, "problems": []})
     window.set_project(create_project(tmp_path / "other", "새 작업"))
@@ -103,6 +105,25 @@ def test_plain_text_feedback_and_export_folder_action(tmp_path):
     panel.set_result({"error": "<b>sample name</b> cannot be read"})
     assert "<b>sample name</b>" in panel.summary.text()
     assert panel.open_folder.isHidden()
+    panel.close()
+    app.processEvents()
+
+
+def test_result_panel_shows_percentage_and_counts_for_job_progress():
+    app = QApplication.instance() or QApplication([])
+    panel = ResultPanel()
+    panel.set_result(
+        {
+            "state": "RUNNING",
+            "counts": {"COMPLETED": 1, "FAILED": 1, "PENDING": 998},
+            "usage": {},
+        }
+    )
+    assert "0.20%" in panel.summary.text()
+    assert "성공 1건" in panel.progress_detail.text()
+    assert "실패 1건" in panel.progress_detail.text()
+    assert panel.progress.value() == 2
+    assert panel.progress.maximum() == 1000
     panel.close()
     app.processEvents()
 

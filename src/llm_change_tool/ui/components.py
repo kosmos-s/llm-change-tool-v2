@@ -61,6 +61,24 @@ FIELDS = {
 }
 
 
+def job_progress(counts):
+    """Return processed/total progress without treating failures as still pending."""
+    total = sum(counts.values())
+    completed = counts.get("COMPLETED", 0)
+    failed = counts.get("FAILED", 0)
+    processed = completed + failed
+    percent = processed / total * 100 if total else 0.0
+    return processed, total, completed, failed, percent
+
+
+def percent_text(percent):
+    if percent in (0, 100):
+        return f"{percent:.0f}%"
+    if percent < 1:
+        return f"{percent:.2f}%"
+    return f"{percent:.1f}%"
+
+
 def text_label(text="", name="", wrap=True):
     widget = QLabel(text)
     widget.setTextFormat(Qt.TextFormat.PlainText)
@@ -146,6 +164,9 @@ class ResultPanel(QFrame):
         self.summary = text_label(empty)
         tone(self.summary, "info")
         layout.addWidget(self.summary)
+        self.progress_detail = text_label("", "muted")
+        self.progress_detail.hide()
+        layout.addWidget(self.progress_detail)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.hide()
@@ -169,6 +190,7 @@ class ResultPanel(QFrame):
         tone(self.summary, "info")
         self.values.setRowCount(0)
         self.values.hide()
+        self.progress_detail.hide()
         self.progress.hide()
         self.raw.clear()
         self.output_path = None
@@ -184,6 +206,7 @@ class ResultPanel(QFrame):
     def set_result(self, value):
         self.raw.setPlainText(json.dumps(value, ensure_ascii=False, indent=2, default=str))
         rows, level, summary = [], "success", "작업이 완료되었습니다."
+        self.progress_detail.hide()
         self.progress.hide()
         self.output_path = None
         if isinstance(value, dict):
@@ -212,15 +235,22 @@ class ResultPanel(QFrame):
                 rows += [(FIELDS.get(k, k), str(v)) for k, v in value.get("counts", {}).items()]
             elif "counts" in value and "state" in value:
                 counts = value["counts"]
-                total = sum(counts.values())
-                done = counts.get("COMPLETED", 0)
-                summary = f"{STATES.get(value['state'], value['state'])} · {done:,} / {total:,}건 분석 완료"
+                processed, total, done, failed, percent = job_progress(counts)
+                percent_label = percent_text(percent)
+                summary = (
+                    f"{STATES.get(value['state'], value['state'])} · {percent_label} · "
+                    f"{processed:,} / {total:,}건 처리"
+                )
                 if value.get("message"):
                     summary += "\n" + explain_error(value["message"])
                 level = "warning" if value["state"] in ("FAILED", "PAUSED") else "info"
                 self.progress.setRange(0, max(total, 1))
-                self.progress.setValue(done)
+                self.progress.setValue(processed)
                 self.progress.show()
+                self.progress_detail.setText(
+                    f"진행률 {percent_label} · 성공 {done:,}건 · 실패 {failed:,}건 · 남음 {max(total - processed, 0):,}건"
+                )
+                self.progress_detail.show()
                 rows = [(STATES.get(k, k), f"{v:,}건") for k, v in counts.items()]
                 usage = value.get("usage", {})
                 rows += [
@@ -234,13 +264,17 @@ class ResultPanel(QFrame):
                 for failure in value.get("failures", []):
                     rows.append((f"실패 {failure['count']:,}건", explain_error(failure["error"])))
             elif "current" in value and "total" in value:
+                percent = value["current"] / value["total"] * 100 if value["total"] else 0
+                percent_label = percent_text(percent)
                 summary, level = (
-                    f"데이터 확인 중 · {value['current']:,} / {value['total']:,}건",
+                    f"데이터 확인 중 · {percent_label} · {value['current']:,} / {value['total']:,}건",
                     "info",
                 )
                 self.progress.setRange(0, max(value["total"], 1))
                 self.progress.setValue(value["current"])
                 self.progress.show()
+                self.progress_detail.setText(f"진행률 {percent_label}")
+                self.progress_detail.show()
             elif "errors" in value and "samples" in value:
                 count = len(value["errors"])
                 summary = f"데이터 {value['samples']:,}건 확인 · 품질 확인 사항 {count:,}건"
