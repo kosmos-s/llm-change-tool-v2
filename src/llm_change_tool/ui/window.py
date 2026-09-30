@@ -214,7 +214,11 @@ class MainWindow(ProjectWindow):
             bool(self.job_id) and not busy and self.job_state not in ("COMPLETED", "CANCELLED")
         )
         self.start_button.setText(
-            "분석 완료" if self.job_state == "COMPLETED" else "분석 시작 / 이어하기"
+            "분석 완료"
+            if self.job_state == "COMPLETED"
+            else "OpenAI 유료 분석 시작 / 이어하기"
+            if self.job_provider == "openai"
+            else "분석 시작 / 이어하기"
         )
         self.reopen_button.setEnabled(
             bool(self.job_id) and not busy and self.job_state == "CANCELLED"
@@ -274,6 +278,10 @@ class MainWindow(ProjectWindow):
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText("API Key · 이 화면의 메모리에만 유지")
+        self.key_visibility = QPushButton("보기")
+        self.key_visibility.setCheckable(True)
+        self.key_visibility.setToolTip("입력한 API Key를 잠시 확인하거나 다시 숨깁니다.")
+        self.key_visibility.toggled.connect(self.toggle_key_visibility)
         self.budget = QDoubleSpinBox()
         self.budget.setRange(0, 1000)
         self.budget.setDecimals(4)
@@ -297,11 +305,18 @@ class MainWindow(ProjectWindow):
         api = QFormLayout(self.api_settings)
         api.setContentsMargins(0, 8, 0, 0)
         api.addRow("모델", self.model)
-        api.addRow("API Key", self.key)
+        key_row = QHBoxLayout()
+        key_row.addWidget(self.key, 1)
+        key_row.addWidget(self.key_visibility)
+        api.addRow("API Key", key_row)
         self.model_price_hint = text_label("", "muted")
         api.addRow("자동 단가", self.model_price_hint)
+        self.cost_preview = text_label("", "muted")
+        api.addRow("비용 예상", self.cost_preview)
         self.approve_api = QCheckBox("선택한 이미지를 OpenAI로 전송하고 유료 분석을 실행합니다.")
         api.addRow(self.approve_api)
+        self.api_readiness = text_label("", "muted")
+        api.addRow("실행 준비", self.api_readiness)
         self.api_settings.hide()
         content.addWidget(self.api_settings)
         self.provider.currentIndexChanged.connect(self.provider_changed)
@@ -309,6 +324,9 @@ class MainWindow(ProjectWindow):
         self.mode.currentIndexChanged.connect(self.mode_changed)
         self.pilot_count.currentTextChanged.connect(self.selection_changed)
         self.selection_seed.textChanged.connect(self.selection_changed)
+        self.key.textChanged.connect(self.update_api_readiness)
+        self.approve_api.toggled.connect(self.update_api_readiness)
+        self.budget.valueChanged.connect(self.update_cost_preview)
         self.provider_changed()
         self.model_changed()
         self.mode_changed()
@@ -400,6 +418,71 @@ class MainWindow(ProjectWindow):
         self.api_settings.setVisible(live)
         self.budget.setEnabled(live)
         self.model_changed()
+        self.update_api_readiness()
+
+    def toggle_key_visibility(self, visible):
+        self.key.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
+        self.key_visibility.setText("숨기기" if visible else "보기")
+
+    @staticmethod
+    def set_attention(widget, enabled):
+        if widget.property("attention") == enabled:
+            return
+        widget.setProperty("attention", enabled)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def update_api_readiness(self, *args):
+        if not hasattr(self, "api_readiness"):
+            return
+        has_key = bool(self.key.text().strip() or os.environ.get("OPENAI_API_KEY", ""))
+        approved = self.approve_api.isChecked()
+        missing = []
+        if not has_key:
+            missing.append("API Key")
+        if not approved:
+            missing.append("이미지 전송·유료 분석 동의")
+        if missing:
+            self.api_readiness.setText("실행 전 확인 필요 · " + " / ".join(missing))
+            tone(self.api_readiness, "warning")
+        else:
+            self.api_readiness.setText("실행 준비 완료 · 아래에서 선택 작업을 시작할 수 있습니다.")
+            tone(self.api_readiness, "success")
+        if has_key:
+            self.set_attention(self.key, False)
+        if approved:
+            self.set_attention(self.approve_api, False)
+
+    def update_cost_preview(self, *args):
+        if not hasattr(self, "cost_preview"):
+            return
+        try:
+            spec = model_spec(self.model.currentData())
+            count = 3000 if self.mode.currentData() == "production" else self.pilot_sample_count()
+        except (TypeError, ValueError):
+            self.cost_preview.setText("기존 작업은 생성 당시 저장된 단가로 계산합니다.")
+            tone(self.cost_preview, "info")
+            return
+        per_item = (20000 * spec.input_price + 1200 * spec.output_price) / 1_000_000
+        estimate = per_item * count
+        limit = self.budget.value()
+        message = (
+            f"보수적 예약 상한 · {count:,}건 × ${per_item:.4f} ≈ ${estimate:.4f} · "
+            f"설정 한도 ${limit:.4f}"
+        )
+        if estimate > limit:
+            message += " · 한도 부족 가능"
+            tone(self.cost_preview, "warning")
+        else:
+            tone(self.cost_preview, "info")
+        self.cost_preview.setText(message)
+
+    def focus_api_requirement(self, widget):
+        self.set_attention(widget, True)
+        current_page = self.tabs.currentWidget()
+        if hasattr(current_page, "ensureWidgetVisible"):
+            current_page.ensureWidgetVisible(widget, 30, 100)
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def model_changed(self, *args):
         model = self.model.currentData()
@@ -407,10 +490,12 @@ class MainWindow(ProjectWindow):
             spec = model_spec(model)
         except ValueError:
             self.model_price_hint.setText("기존 작업에 저장된 모델·단가를 사용합니다.")
+            self.update_cost_preview()
             return
         self.model_price_hint.setText(
             f"입력 ${spec.input_price:g} / 출력 ${spec.output_price:g} · 1M 토큰 기준 · {PRICE_CHECKED_AT} 확인값"
         )
+        self.update_cost_preview()
 
     def pilot_sample_count(self):
         value = self.pilot_count.currentText().strip()
@@ -425,6 +510,7 @@ class MainWindow(ProjectWindow):
         pilot = self.mode.currentData() == "pilot"
         self.pilot_count.setEnabled(pilot)
         self.selection_changed()
+        self.update_cost_preview()
 
     def selection_changed(self, *args):
         if not hasattr(self, "selection_hint"):
@@ -438,6 +524,7 @@ class MainWindow(ProjectWindow):
         self.selection_hint.setText(
             f"시험용 {count}건을 출처·split·오류 유형·라벨 기준으로 균형 추출합니다."
         )
+        self.update_cost_preview()
 
     def show_selection_preview(self, report):
         selected = report["selected"]
@@ -745,7 +832,7 @@ class MainWindow(ProjectWindow):
             self.job_id, self.run_id = candidate, run_id
             self.show_progress(job_info(self.project, self.job_id))
         else:
-            self.job_id = self.run_id = self.job_state = None
+            self.job_id = self.run_id = self.job_state = self.job_provider = None
             self.selected_run_hint.setText("작업을 만든 뒤 분석을 시작하세요.")
             self.job_progress.setRange(0, 1)
             self.job_progress.setValue(0)
@@ -761,11 +848,18 @@ class MainWindow(ProjectWindow):
             run = one(con, "SELECT config FROM llm_runs WHERE id=:id", id=self.run_id)
         if json.loads(run["config"])["provider"] == "openai":
             self.api_settings.show()
-            if not self.approve_api.isChecked():
+            key = self.key.text().strip() or os.environ.get("OPENAI_API_KEY", "")
+            if not key:
+                self.focus_api_requirement(self.key)
+                self.update_api_readiness()
                 return self._error(
-                    ValueError(
-                        "선택한 작업은 OpenAI 분석입니다. API 설정의 이미지 전송/유료 호출 체크를 확인하세요."
-                    )
+                    ValueError("OpenAI API Key를 입력하세요. 입력 위치로 이동했습니다.")
+                )
+            if not self.approve_api.isChecked():
+                self.focus_api_requirement(self.approve_api)
+                self.update_api_readiness()
+                return self._error(
+                    ValueError("이미지 전송·유료 분석 동의가 필요합니다. 체크 위치로 이동했습니다.")
                 )
         key = self.key.text().strip() or os.environ.get("OPENAI_API_KEY", "")
         self.background(lambda p: run_job(self.project, self.job_id, key, progress=p))

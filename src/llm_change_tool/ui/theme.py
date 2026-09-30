@@ -48,8 +48,15 @@ QComboBox { padding-right: 25px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 24px; border: none; }
 QComboBox::down-arrow { image: url("__CHEVRON__"); width: 12px; height: 12px; }
 QComboBox QAbstractItemView { background: white; color: #243746; selection-background-color: #dcedea; selection-color: #143b38; padding: 5px; }
-QCheckBox { spacing: 8px; min-height: 24px; }
-QCheckBox::indicator { width: 17px; height: 17px; }
+QCheckBox { spacing: 10px; min-height: 28px; }
+QCheckBox::indicator { width: 21px; height: 21px; background: #ffffff;
+    border: 2px solid #708795; border-radius: 5px; }
+QCheckBox::indicator:hover { border-color: #268a85; background: #edf6f5; }
+QCheckBox::indicator:checked { background: #126b65; border-color: #126b65; image: url("__CHECKMARK__"); }
+QCheckBox:focus { color: #126b65; }
+QCheckBox[attention="true"] { color: #9b3036; background: #ffedf0;
+    border: 1px solid #d87d84; border-radius: 7px; padding: 8px 10px; font-weight: 700; }
+QLineEdit[attention="true"] { border: 2px solid #c94e58; background: #fff5f6; }
 QProgressBar { border: none; background: #e4ecef; border-radius: 4px; height: 8px; max-height: 8px; }
 QProgressBar::chunk { background: #218779; border-radius: 4px; }
 QTableWidget { border: 1px solid #dce5eb; border-radius: 7px; background: #ffffff;
@@ -95,4 +102,9 @@ def apply_theme():
     font.setPointSize(10)
     app.setFont(font)
     chevron = files("llm_change_tool").joinpath("resources/ui/chevron-down.svg")
-    app.setStyleSheet(STYLE.replace("__CHEVRON__", str(chevron).replace("\\", "/")))
+    checkmark = files("llm_change_tool").joinpath("resources/ui/checkmark.svg")
+    app.setStyleSheet(
+        STYLE.replace("__CHEVRON__", str(chevron).replace("\\", "/")).replace(
+            "__CHECKMARK__", str(checkmark).replace("\\", "/")
+        )
+    )
