@@ -46,7 +46,7 @@ Windows 배포본은 [GitHub Releases](https://github.com/kosmos-s/llm-change-to
 ## 알려진 제한 및 실제 사용자 수용 테스트
 
 - 실제 기업 데이터의 모든 변형 스키마/이미지 크기, 유료 OpenAI 호출은 검증하지 않았습니다. 첫 실데이터는 소규모 pilot로 확인해야 합니다.
-- OpenAI가 현재 모델에 대해 image input과 strict structured output을 지원해야 합니다. 모델 단가 입력은 사용자 책임이며 비용 제한은 추정치입니다.
+- OpenAI가 선택 모델에 대해 image input과 strict structured output을 지원해야 합니다. 앱은 릴리스에 고정된 공식 확인 단가를 자동 적용하며, 비용 제한은 추정치입니다.
 - API 요청을 provider가 처리한 직후 프로세스가 죽으면 결과를 복구할 수 없고, Retry는 추가 비용이 발생할 수 있습니다. 보수적 예약액과 UNKNOWN 이력을 남깁니다.
 - 자동 저장은 초안이며 반드시 완료 저장과 구분합니다. UI의 실제 한글 입력, HiDPI, 듀얼 모니터, 매우 큰 이미지, Windows 종료/백신 환경은 팀원 PC에서 확인해야 합니다.
 - 앱 안의 이미지 데이터는 로컬 경로로 읽습니다. 네트워크 마운트 자동 탐지는 완전하지 않습니다.
@@ -82,6 +82,15 @@ Windows 배포본은 [GitHub Releases](https://github.com/kosmos-s/llm-change-to
 1. Portable ZIP 전체를 풀고 `LLMChangeTool.exe` 실행, 새 프로젝트 생성/백업/복원.
 2. 허가된 소량 실제 데이터로 Import 결과와 원본 엘컴텍 JSON round-trip 확인.
 3. 이미지 시점·화질·동기화 zoom/pan·한글 입력·자동 임시 저장/완료 저장 확인.
-4. 단가를 확인한 소량 OpenAI pilot, timeout/일시정지/종료 후 재개 확인.
+4. 표시된 자동 단가를 공식 페이지와 대조한 소량 OpenAI pilot, timeout/일시정지/종료 후 재개 확인.
 5. 팀원 PC로 백업/검수 ZIP 교환, 경로 재연결 및 충돌 해결 확인.
 6. 소규모 수용 검증 후 errors 각 1,000건의 production 계획으로 진행.
+# 0.1.2 검수 안전성과 재개 개선
+
+2026-09-29 검토에서 재현한 이미지 오류 후 잘못된 저장, 변경된 라벨에 남는 이전 영문 근거, 예산 한도 도달 후 재개 불가, 취소 작업 재사용, 연속 Undo 왕복을 수정했습니다. DB 스키마 3은 영문 검수 근거, Undo 복원 대상, 예산 변경·작업 재개 이력을 추가하며 기존 Run 설정과 검수 행을 보존합니다. 구 DB는 자동 백업 후 전환됩니다.
+
+Linux/Python 3.12에서 pytest 61개, Core self-test, GUI/worker smoke, Ruff, compileall, 비밀정보 검사를 통과했습니다. 합성 데이터로 1480×960 및 1366×768 한글 화면을 확인했습니다. 실제 회사 데이터와 유료 API 호출은 사용하지 않았습니다. Windows CI 결과는 해당 변경 PR의 검사 결과를 확인합니다.
+
+영문 근거 자동 번역은 구현하지 않았습니다. 변경된 판정에 원본 영문을 재사용하지 않으며, 선택 입력한 영문을 DB·ZIP·Export에 보존합니다. 미입력은 품질 화면과 manifest에 표시합니다. 실데이터 검증은 [30~50건 수용 검증](acceptance-0.1.2.md)을 따릅니다. 표본 선정 전략, 평가용 정답 집합 분리, F1/F2 목표 합의는 후속 과제입니다.
+
+아래 내용은 초기 구현 및 0.1.1 검증 기록입니다.

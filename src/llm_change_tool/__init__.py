@@ -1,3 +1,5 @@
 """LLM Change Tool v2. Core modules do not import Qt."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.5"
+
+BUILD_ID = "20260930-pilot-sampling-v1"

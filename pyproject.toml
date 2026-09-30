@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-change-tool"
-version = "0.1.1"
+version = "0.1.5"
 description = "Local-first aerial image change review desktop application"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

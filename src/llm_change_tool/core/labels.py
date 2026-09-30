@@ -73,6 +73,15 @@ def validate_labels(labels, *, policy=True):
     return labels
 
 
+def validate_draft(labels):
+    """Unresolved source values and hierarchy are permitted only before DONE."""
+    if set(labels) != set(KEYS):
+        raise ValueError("Label keys do not match schema")
+    if any(v is not None and (type(v) is not int or v not in (0, 1)) for v in labels.values()):
+        raise ValueError("Draft labels must be 0, 1 or null")
+    return labels
+
+
 def original_labels(doc):
     result = {}
     for f in FIELDS:
@@ -85,22 +94,64 @@ def original_labels(doc):
     return validate_labels(result, policy=False)
 
 
-def effective_doc(raw: bytes, labels: dict, reason: str):
+def import_labels(doc):
+    """Preserve unknown source values; only absent inactive details imply zero."""
+    result, issues = {}, []
+    for f in FIELDS:
+        value = doc
+        missing = False
+        for key in f["path"]:
+            if not isinstance(value, dict) or key not in value:
+                missing = True
+                break
+            value = value[key]
+        if missing and f.get("parent") and result.get(f["parent"]) == 0:
+            result[f["key"]] = 0
+            continue
+        try:
+            if missing:
+                raise ValueError("missing label")
+            result[f["key"]] = bit(value)
+        except ValueError:
+            result[f["key"]] = None
+            issues.append(f["key"] + ": missing or invalid label")
+    try:
+        validate_labels(result, policy=False)
+    except ValueError as exc:
+        issues.append(str(exc))
+    return result, issues
+
+
+def effective_doc(raw: bytes, labels: dict, reason: str, reason_en: str | None = None):
     validate_labels(labels)
     doc, _ = strict_json(raw)
     doc = copy.deepcopy(doc)
+    source_labels, source_issues = import_labels(doc)
+    labels_changed = bool(source_issues) or source_labels != labels
+    if labels_changed and not reason.strip():
+        raise ValueError("라벨을 수정한 경우 최종 판단의 한국어 근거를 입력하세요.")
+    # A blank confirmation of unchanged labels preserves the original explanation.
+    korean = reason if reason.strip() else doc.get("reason_ko", "")
+    explanation_changed = labels_changed or korean != doc.get("reason_ko", "")
     for f in FIELDS:
         parent = doc
         for key in f["path"][:-1]:
+            if not isinstance(parent.get(key), dict):
+                parent[key] = {}
             parent = parent[key]
-        old = parent[f["path"][-1]]
+        old = parent.get(f["path"][-1], 0)
         value = labels[f["key"]]
         parent[f["path"][-1]] = (
             bool(value)
             if isinstance(old, bool)
             else (value if type(old) is int else ("o" if value else "x"))
         )
-    doc["reason_ko"] = reason
+    doc["reason_ko"] = korean
+    # Never silently attach the source's English explanation to a different decision.
+    if reason_en is not None or explanation_changed:
+        doc["reason"] = reason_en or ""
+        if "reason_en" in doc:
+            doc["reason_en"] = reason_en or ""
     original_labels(doc)
     return doc
 

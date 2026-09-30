@@ -88,13 +88,14 @@ def test_backup_captures_committed_wal_and_refuses_overwrite(tmp_path):
 
 def test_migration_is_idempotent_and_failure_rolls_back(tmp_path, monkeypatch):
     project = create_project(tmp_path / "project", "test")
+    version = database.SCHEMA_VERSION
     with database.connect(project.database) as con:
         database.migrate(con, timestamp="now")
-        assert con.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
-        monkeypatch.setattr(database, "SCHEMA_VERSION", 3)
+        assert con.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == version
+        monkeypatch.setattr(database, "SCHEMA_VERSION", version + 1)
         monkeypatch.setitem(
             database.MIGRATIONS,
-            3,
+            version + 1,
             (
                 "CREATE TABLE should_rollback (id INTEGER)",
                 "INVALID SQL",
@@ -102,7 +103,7 @@ def test_migration_is_idempotent_and_failure_rolls_back(tmp_path, monkeypatch):
         )
         with pytest.raises(sqlite3.OperationalError):
             database.migrate(con, timestamp="now")
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == version
         assert (
             con.execute("SELECT name FROM sqlite_master WHERE name = 'should_rollback'").fetchone()
             is None
@@ -165,5 +166,5 @@ def test_actual_schema_one_upgrade_creates_backup(tmp_path, monkeypatch):
     assert upgraded.project_id == "stable-id"
     assert list((root / "backups").glob("*.sqlite3"))
     with database.connect(upgraded.database) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert con.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
         assert con.execute("SELECT count(*) FROM samples").fetchone()[0] == 0

@@ -5,9 +5,16 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from llm_change_tool.core.datasets import safe_path, sha, verify_sources
+from llm_change_tool.core.datasets import quality_issues, safe_path, sha, verify_sources
 from llm_change_tool.core.jobs import validate_run
-from llm_change_tool.core.labels import Prediction, canonical, effective_doc, validate_labels
+from llm_change_tool.core.labels import (
+    Prediction,
+    canonical,
+    effective_doc,
+    import_labels,
+    strict_json,
+    validate_labels,
+)
 from llm_change_tool.core.locking import worker_lock
 from llm_change_tool.core.plans import validate_plan
 from llm_change_tool.core.projects import now
@@ -34,6 +41,7 @@ def gate_in_transaction(con, run_id):
         "deferred": 0,
         "review_required": 0,
         "human_complete": 0,
+        "english_reason_missing": 0,
     }
     for sample in samples:
         sid = sample["id"]
@@ -86,7 +94,11 @@ def gate_in_transaction(con, run_id):
             labels = json.loads(review["labels"])
             reason = review["reason"]
             counts["human_complete"] += 1
-        elif comp["required"] or comp["decision"] != "AUTO_KEEP":
+        elif (
+            comp["required"]
+            or comp["decision"] != "AUTO_KEEP"
+            or import_labels(strict_json(sample["original_raw"])[0])[1]
+        ):
             problems.append(prefix + ": required human review unresolved")
             continue
         else:
@@ -94,11 +106,19 @@ def gate_in_transaction(con, run_id):
             reason = ""
         try:
             validate_labels(labels)
-            doc = effective_doc(sample["original_raw"], labels, reason) if review else None
+            doc = (
+                effective_doc(sample["original_raw"], labels, reason, review["reason_en"])
+                if review
+                else effective_doc(sample["original_raw"], labels, "")
+            )
+            if not review and doc == strict_json(sample["original_raw"])[0]:
+                doc = None
         except ValueError as exc:
             problems.append(prefix + ": effective JSON error: " + str(exc))
             continue
         counts["review_decisions"] += 1
+        if doc and doc.get("reason_ko") and not doc.get("reason"):
+            counts["english_reason_missing"] += 1
         effective.append((sample, review, doc))
     conflicts = execute(
         con, "SELECT count(*) FROM merge_conflicts WHERE run_id=:run AND state='OPEN'", run=run_id
@@ -113,8 +133,18 @@ def gate_in_transaction(con, run_id):
     )
 
 
+def run_mode(project, run_id):
+    with transaction(project) as con:
+        return one(
+            con,
+            """SELECT p.mode FROM work_plans p JOIN llm_runs r
+                   ON r.plan_id=p.id WHERE r.id=:id""",
+            id=run_id,
+        )["mode"]
+
+
 def final_gate(project, run_id):
-    errors = verify_sources(project)
+    errors = verify_sources(project, run_mode(project, run_id))
     try:
         with transaction(project) as con:
             report, _, _, _ = gate_in_transaction(con, run_id)
@@ -127,7 +157,7 @@ def final_gate(project, run_id):
 
 def export_run(project, run_id, destination: Path | None = None):
     with worker_lock(project):
-        errors = verify_sources(project)
+        errors = verify_sources(project, run_mode(project, run_id))
         if errors:
             raise ValueError(f"Dataset quality/integrity errors: {len(errors)}")
         with transaction(project) as con:
@@ -161,7 +191,7 @@ def export_run(project, run_id, destination: Path | None = None):
                                 (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode(
                                     "utf-8"
                                 )
-                                if review
+                                if doc
                                 else sample["original_raw"]
                             )
                             output.write_bytes(raw)
@@ -175,6 +205,9 @@ def export_run(project, run_id, destination: Path | None = None):
                             "sample_id": sample["id"],
                             "logical_key": sample["logical_key"],
                             "review_revision": review["revision"] if review else None,
+                            "english_reason_missing": bool(
+                                doc and doc.get("reason_ko") and not doc.get("reason")
+                            ),
                             "files": file_hashes,
                             "source_hashes": hashes,
                         }
@@ -184,6 +217,7 @@ def export_run(project, run_id, destination: Path | None = None):
                     "id": sid,
                     "mode": plan["mode"],
                     "production": plan["mode"] == "production",
+                    "quality_issues": quality_issues(json.loads(dataset["quality"]), plan["mode"]),
                     "dataset_fingerprint": dataset["fingerprint"],
                     "plan_fingerprint": plan["fingerprint"],
                     "run_config_hash": run["config_hash"],

@@ -7,7 +7,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from llm_change_tool.core.jobs import validate_run
-from llm_change_tool.core.labels import SCHEMA_HASH, canonical, digest, strict_json, validate_labels
+from llm_change_tool.core.labels import (
+    SCHEMA_HASH,
+    canonical,
+    digest,
+    strict_json,
+    validate_draft,
+    validate_labels,
+)
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.reviews import append_review, latest_review
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -28,6 +35,7 @@ def review_payload(review):
     return {
         "labels": json.loads(review["labels"]),
         "reason": review["reason"],
+        "reason_en": review["reason_en"],
         "state": review["state"],
         "reviewer": review["reviewer"],
         "timestamp": review["created_at"],
@@ -37,7 +45,8 @@ def review_payload(review):
 
 def same_review(local, payload):
     return bool(local) and all(
-        review_payload(local)[k] == payload[k] for k in ("labels", "reason", "state", "result_hash")
+        review_payload(local)[k] == payload.get(k)
+        for k in ("labels", "reason", "reason_en", "state", "result_hash")
     )
 
 
@@ -127,7 +136,7 @@ def read_package(path):
             payload, _ = strict_json(raw)
             if payload["sample_id"] != sid:
                 raise ValueError("Sample identity mismatch")
-            validate_labels(payload["labels"])
+            (validate_labels if payload["state"] == "DONE" else validate_draft)(payload["labels"])
             if (
                 payload["state"] not in ("DONE", "DEFERRED")
                 or not isinstance(payload["reviewer"], str)
@@ -136,6 +145,9 @@ def read_package(path):
                 raise ValueError("Invalid review")
             if not isinstance(payload["reason"], str) or len(payload["reason"]) > 10000:
                 raise ValueError("Invalid reason")
+            english = payload.get("reason_en")
+            if english is not None and (not isinstance(english, str) or len(english) > 10000):
+                raise ValueError("Invalid English reason")
             payloads.append(payload)
         if set(names) != allowed:
             raise ValueError("Unexpected or unsafe ZIP member")
@@ -178,6 +190,7 @@ def import_reviews(project, run_id, path):
                     payload["state"],
                     None,
                     "zip:" + manifest["id"],
+                    reason_en=payload.get("reason_en"),
                 )
                 counts["NEW"] += 1
             else:
@@ -243,6 +256,7 @@ def resolve_conflict(project, conflict_id, choice, expected_revision):
                 payload["state"],
                 expected_revision,
                 "conflict:" + conflict_id,
+                reason_en=payload.get("reason_en"),
             )
         execute(
             con,

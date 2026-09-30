@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from llm_change_tool.ui.feedback import explain_error
+
 STATES = {
     "PENDING": "대기",
     "RUNNING": "분석 중",
@@ -54,8 +56,27 @@ FIELDS = {
     "total": "계획 항목",
     "ai_success": "AI 성공",
     "human_complete": "사람 검수 완료",
+    "english_reason_missing": "영문 근거 미입력 (선택 항목)",
     "review_decisions": "최종 결정 완료",
 }
+
+
+def job_progress(counts):
+    """Return processed/total progress without treating failures as still pending."""
+    total = sum(counts.values())
+    completed = counts.get("COMPLETED", 0)
+    failed = counts.get("FAILED", 0)
+    processed = completed + failed
+    percent = processed / total * 100 if total else 0.0
+    return processed, total, completed, failed, percent
+
+
+def percent_text(percent):
+    if percent in (0, 100):
+        return f"{percent:.0f}%"
+    if percent < 1:
+        return f"{percent:.2f}%"
+    return f"{percent:.1f}%"
 
 
 def text_label(text="", name="", wrap=True):
@@ -143,6 +164,9 @@ class ResultPanel(QFrame):
         self.summary = text_label(empty)
         tone(self.summary, "info")
         layout.addWidget(self.summary)
+        self.progress_detail = text_label("", "muted")
+        self.progress_detail.hide()
+        layout.addWidget(self.progress_detail)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.hide()
@@ -166,6 +190,7 @@ class ResultPanel(QFrame):
         tone(self.summary, "info")
         self.values.setRowCount(0)
         self.values.hide()
+        self.progress_detail.hide()
         self.progress.hide()
         self.raw.clear()
         self.output_path = None
@@ -181,6 +206,7 @@ class ResultPanel(QFrame):
     def set_result(self, value):
         self.raw.setPlainText(json.dumps(value, ensure_ascii=False, indent=2, default=str))
         rows, level, summary = [], "success", "작업이 완료되었습니다."
+        self.progress_detail.hide()
         self.progress.hide()
         self.output_path = None
         if isinstance(value, dict):
@@ -209,15 +235,22 @@ class ResultPanel(QFrame):
                 rows += [(FIELDS.get(k, k), str(v)) for k, v in value.get("counts", {}).items()]
             elif "counts" in value and "state" in value:
                 counts = value["counts"]
-                total = sum(counts.values())
-                done = counts.get("COMPLETED", 0)
-                summary = f"{STATES.get(value['state'], value['state'])} · {done:,} / {total:,}건 분석 완료"
+                processed, total, done, failed, percent = job_progress(counts)
+                percent_label = percent_text(percent)
+                summary = (
+                    f"{STATES.get(value['state'], value['state'])} · {percent_label} · "
+                    f"{processed:,} / {total:,}건 처리"
+                )
                 if value.get("message"):
-                    summary += "\n" + value["message"]
+                    summary += "\n" + explain_error(value["message"])
                 level = "warning" if value["state"] in ("FAILED", "PAUSED") else "info"
                 self.progress.setRange(0, max(total, 1))
-                self.progress.setValue(done)
+                self.progress.setValue(processed)
                 self.progress.show()
+                self.progress_detail.setText(
+                    f"진행률 {percent_label} · 성공 {done:,}건 · 실패 {failed:,}건 · 남음 {max(total - processed, 0):,}건"
+                )
+                self.progress_detail.show()
                 rows = [(STATES.get(k, k), f"{v:,}건") for k, v in counts.items()]
                 usage = value.get("usage", {})
                 rows += [
@@ -226,21 +259,75 @@ class ResultPanel(QFrame):
                         f"${usage.get('cost', 0):.4f} / ${usage.get('reserved', 0):.4f}",
                     )
                 ]
+                if "cost_limit" in value:
+                    rows.append(("현재 누적 예산 한도", f"${value['cost_limit']:.4f}"))
+                for failure in value.get("failures", []):
+                    rows.append((f"실패 {failure['count']:,}건", explain_error(failure["error"])))
             elif "current" in value and "total" in value:
+                percent = value["current"] / value["total"] * 100 if value["total"] else 0
+                percent_label = percent_text(percent)
                 summary, level = (
-                    f"데이터 확인 중 · {value['current']:,} / {value['total']:,}건",
+                    f"데이터 확인 중 · {percent_label} · {value['current']:,} / {value['total']:,}건",
                     "info",
                 )
                 self.progress.setRange(0, max(value["total"], 1))
                 self.progress.setValue(value["current"])
                 self.progress.show()
+                self.progress_detail.setText(f"진행률 {percent_label}")
+                self.progress_detail.show()
             elif "errors" in value and "samples" in value:
                 count = len(value["errors"])
-                summary = f"데이터 {value['samples']:,}건 확인 · 품질 오류 {count:,}건"
+                summary = f"데이터 {value['samples']:,}건 확인 · 품질 확인 사항 {count:,}건"
                 level = "warning" if count else "success"
                 rows = [(e.get("path", "데이터"), e.get("error", "")) for e in value["errors"]]
                 if not count:
                     summary += "\n이제 AI 작업을 만들고 분석을 시작하세요."
+            elif "ready" in value and "split_counts" in value:
+                ready = value["ready"]
+                level = "success" if ready else "warning"
+                summary = (
+                    "데이터 복사본 준비 가능"
+                    if ready
+                    else "데이터 준비 차단 · 아래 항목을 해결하세요."
+                )
+                if "path" in value:
+                    self.output_path = str(value["path"])
+                    summary = "새 데이터셋 생성 및 재검사 완료\n" + self.output_path
+                rows = [
+                    ("포함 / 제외", f"{value['included']} / {value['excluded']}"),
+                    (
+                        "본작업 최소 수량",
+                        "충족" if value["production_size_ready"] else "미달 · split별 1,000건 필요",
+                    ),
+                ]
+                rows += [("해결 필요", str(p)) for p in value.get("problems", [])]
+                rows += [(split, f"{count}건") for split, count in value["split_counts"].items()]
+            elif "by_error_type" in value:
+                summary = "검수 수정률·표본 검사·시간 보고서"
+                if "path" in value:
+                    self.output_path = str(value["path"])
+                rate = value["modification_rate"]
+                rows = [
+                    ("완료 / 수정", f"{value['completed']} / {value['modified']}"),
+                    ("원본 수정률", f"{rate:.1%}" if rate is not None else "미확정"),
+                    ("추정 입력 시간", f"{value['estimated_interaction_seconds']:.1f}초"),
+                    ("시간 측정 범위", value["timing_note"]),
+                ]
+                audit = value["auto_audit"]
+                observed = audit["observed_error_rate"]
+                rows += [
+                    ("자동 유지 표본 완료 / 선정", f"{audit['completed']} / {audit['selected']}"),
+                    ("완료 표본 오류율", f"{observed:.1%}" if observed is not None else "미확정"),
+                ]
+                rows += [
+                    (key, f"완료 {v['completed']} · 수정 {v['modified']}")
+                    for key, v in value["by_error_type"].items()
+                ]
+                if value.get("selection"):
+                    rows.append(("표본 seed", value["selection"]["seed"]))
+            elif "audit_selected" in value:
+                summary = f"자동 유지 {value['audit_selected']}건을 필수 검수 목록에 추가했습니다."
+                rows = [("표본 seed", value["seed"])]
             elif "path" in value:
                 self.output_path = str(value["path"])
                 summary = "파일 저장 완료\n" + self.output_path

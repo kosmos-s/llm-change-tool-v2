@@ -33,6 +33,8 @@ def test_reopen_selects_existing_job_and_clears_other_project_results(imported, 
     assert window.job_id == job and window.run_id == run
     assert len(window.review_widget.items) == 6
     assert not window.start_button.isEnabled()  # Completed jobs need no rerun.
+    assert window.job_progress_percent.text() == "100%"
+    assert window.job_progress.value() == window.job_progress.maximum() == 6
     assert "6" in window.dataset_hint.text()
     window.results.set_result({"passed": True, "counts": {}, "problems": []})
     window.set_project(create_project(tmp_path / "other", "새 작업"))
@@ -107,6 +109,25 @@ def test_plain_text_feedback_and_export_folder_action(tmp_path):
     app.processEvents()
 
 
+def test_result_panel_shows_percentage_and_counts_for_job_progress():
+    app = QApplication.instance() or QApplication([])
+    panel = ResultPanel()
+    panel.set_result(
+        {
+            "state": "RUNNING",
+            "counts": {"COMPLETED": 1, "FAILED": 1, "PENDING": 998},
+            "usage": {},
+        }
+    )
+    assert "0.20%" in panel.summary.text()
+    assert "성공 1건" in panel.progress_detail.text()
+    assert "실패 1건" in panel.progress_detail.text()
+    assert panel.progress.value() == 2
+    assert panel.progress.maximum() == 1000
+    panel.close()
+    app.processEvents()
+
+
 def test_existing_openai_job_reveals_credentials_without_api_call(imported):
     app = QApplication.instance() or QApplication([])
     project, _ = imported
@@ -120,8 +141,24 @@ def test_existing_openai_job_reveals_credentials_without_api_call(imported):
     assert window.job_id == job
     assert window.provider.currentData() == "openai"
     assert window.api_settings.isVisible()
-    assert window.model.text() == "test-model"
+    assert window.model.currentData() == "test-model"
     assert "test-model" in window.selected_run_hint.text()
     assert window.start_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.set_project(create_project(tmp_path / "project", "선택 설정"))
+    assert window.pilot_count.currentText() == "50"
+    assert window.model.findData("gpt-4o-mini") >= 0
+    assert window.model.findData("gpt-6-luna") >= 0
+    assert window.model.findData("gpt-6.1-sol") >= 0
+    window.provider.setCurrentIndex(window.provider.findData("openai"))
+    window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
+    assert "입력 $0.1" in window.model_price_hint.text()
+    assert "출력 $0.5" in window.model_price_hint.text()
     window.close()
     app.processEvents()

@@ -1,6 +1,7 @@
 """Persistent sequential job queue with crash-safe reservations and frozen provenance."""
 
 import hashlib
+import math
 import time
 from typing import Literal
 from uuid import uuid4
@@ -67,6 +68,11 @@ def create_job(project, plan_id, config: RunConfig, prompt=None):
             h=config_hash,
         )
         if old:
+            job = one(con, "SELECT state FROM jobs WHERE id=:id", id=old[0]["id"])
+            if job["state"] == "CANCELLED":
+                raise ValueError(
+                    "같은 설정의 취소 작업이 있습니다. 목록에서 선택한 뒤 ‘취소 작업 다시 열기’를 누르세요."
+                )
             return old[0]["id"]
         run_id, job_id = str(uuid4()), str(uuid4())
         execute(
@@ -130,15 +136,89 @@ def job_info(project, job_id):
             FROM attempts WHERE job_id=:id""",
             id=job_id,
         )
+        run = one(con, "SELECT config FROM llm_runs WHERE id=:id", id=job["run_id"])
+        config = RunConfig.model_validate_json(run["config"])
+        job["provider"], job["model"] = config.provider, config.model
+        job["cost_limit"] = budget_limit(con, job_id, config.cost_limit)
+        job["failures"] = rows(
+            con,
+            "SELECT error,count(*) count FROM job_items WHERE job_id=:id AND state='FAILED' GROUP BY error ORDER BY count(*) DESC",
+            id=job_id,
+        )
         return job
 
 
+def budget_limit(con, job_id, initial_limit):
+    changes = rows(
+        con,
+        "SELECT new_limit FROM job_budget_events WHERE job_id=:id ORDER BY id DESC LIMIT 1",
+        id=job_id,
+    )
+    return changes[0]["new_limit"] if changes else initial_limit
+
+
+def update_budget(project, job_id, new_limit, *, expected_limit, reason):
+    if (
+        isinstance(new_limit, bool)
+        or not isinstance(new_limit, (int, float))
+        or not math.isfinite(new_limit)
+        or not 0 < new_limit <= 1000
+    ):
+        raise ValueError("비용 한도는 0보다 크고 1,000달러 이하여야 합니다.")
+    if not reason.strip() or len(reason) > 1000:
+        raise ValueError("예산 변경 사유를 입력하세요 (최대 1,000자).")
+    # The OS lock also covers an in-flight request after Pause/Cancel was clicked.
+    with worker_lock(project), transaction(project) as con:
+        job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
+        if job["state"] in ("RUNNING", "COMPLETED", "CANCELLED"):
+            raise ValueError("대기·일시정지·실패 작업에서만 예산을 변경할 수 있습니다.")
+        run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=job["run_id"])
+        config = validate_run(con, run)
+        if config.provider != "openai":
+            raise ValueError("Mock 작업에는 유료 예산이 필요하지 않습니다.")
+        old = budget_limit(con, job_id, config.cost_limit)
+        if old != expected_limit:
+            raise ValueError("예산이 변경되었습니다. 작업을 다시 선택하세요.")
+        if new_limit != old:
+            execute(
+                con,
+                "INSERT INTO job_budget_events(job_id,old_limit,new_limit,reason,created_at) VALUES (:job,:old,:new,:reason,:time)",
+                job=job_id,
+                old=old,
+                new=new_limit,
+                reason=reason.strip(),
+                time=now(),
+            )
+            execute(
+                con,
+                "UPDATE jobs SET message='예산을 변경했습니다. 분석 시작 / 이어하기를 누르세요.' WHERE id=:id",
+                id=job_id,
+            )
+    return job_info(project, job_id)
+
+
 def control_job(project, job_id, action):
-    if action not in ("pause", "cancel", "retry"):
+    if action not in ("pause", "cancel", "retry", "reopen"):
         raise ValueError("Invalid action")
-    if action == "retry":
+    if action in ("retry", "reopen"):
         with worker_lock(project), transaction(project) as con:
             job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
+            if action == "reopen":
+                if job["state"] != "CANCELLED":
+                    raise ValueError("취소된 작업만 다시 열 수 있습니다.")
+                _recover(con)
+                execute(
+                    con,
+                    "UPDATE jobs SET state='PAUSED',owner=NULL,message='취소 작업을 다시 열었습니다. 완료 결과는 보존됩니다.' WHERE id=:id",
+                    id=job_id,
+                )
+                execute(
+                    con,
+                    "INSERT INTO job_control_events(job_id,action,created_at) VALUES (:job,'reopen',:time)",
+                    job=job_id,
+                    time=now(),
+                )
+                return
             if job["state"] == "CANCELLED":
                 raise ValueError("Cancelled jobs cannot resume")
             execute(
@@ -187,9 +267,12 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
             job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
             run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=job["run_id"])
             config = validate_run(con, run)
+            config.cost_limit = budget_limit(con, job_id, config.cost_limit)
             if job["state"] in ("COMPLETED", "CANCELLED"):
                 return {"state": job["state"]}
-        errors = verify_sources(project)
+        with transaction(project) as con:
+            mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
+        errors = verify_sources(project, mode)
         if errors:
             raise ValueError(f"Source integrity/quality errors: {len(errors)}")
         provider = provider or (
