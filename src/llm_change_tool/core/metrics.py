@@ -82,14 +82,17 @@ def dashboard(project, run_id=None):
         )
         values = rows(
             con,
-            """SELECT s.id,s.original_labels,r.prediction,v.labels,v.state FROM samples s
+            """SELECT s.id,s.original_labels,r.prediction,v.labels,v.state,v.result_hash review_hash,c.result_hash comparison_hash FROM samples s
             JOIN job_items i ON i.sample_id=s.id AND i.job_id=:job
             LEFT JOIN llm_results r ON r.sample_id=s.id AND r.run_id=:run
+            LEFT JOIN comparisons c ON c.sample_id=s.id AND c.run_id=:run
             LEFT JOIN reviews v ON v.revision=(SELECT max(revision) FROM reviews WHERE run_id=:run AND sample_id=s.id)""",
             job=job["id"],
             run=run_id,
         )
-        done = [v for v in values if v["state"] == "DONE"]
+        done = [
+            v for v in values if v["state"] == "DONE" and v["review_hash"] == v["comparison_hash"]
+        ]
         result["review_completed"] = len(done)
         result["deferred"] = sum(v["state"] == "DEFERRED" for v in values)
         result["drafts"] = sum(v["state"] == "DRAFT" for v in values)
@@ -113,9 +116,24 @@ def dashboard(project, run_id=None):
         return result
 
 
-def create_golden(project, run_id, name, sample_ids=None):
+def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploration", split=None):
     if not name.strip():
         raise ValueError("Golden set name required")
+    if purpose not in ("exploration", "training", "evaluation") or split not in (
+        None,
+        "train",
+        "val",
+        "test",
+    ):
+        raise ValueError("Invalid golden purpose/split")
+    if purpose == "evaluation" and split not in ("val", "test"):
+        raise ValueError("평가용은 val 또는 test 하나를 선택하세요.")
+    if purpose == "training" and split != "train":
+        raise ValueError("학습용은 train을 선택하세요.")
+    from llm_change_tool.core.datasets import verify_sources
+
+    if verify_sources(project, "pilot"):
+        raise ValueError("Source integrity errors")
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
         values = rows(
@@ -125,12 +143,28 @@ def create_golden(project, run_id, name, sample_ids=None):
             WHERE sample_id=v.sample_id AND run_id=:run) ORDER BY v.sample_id""",
             run=run_id,
         )
+        from llm_change_tool.core.quality import image_identity
+
+        samples = rows(con, "SELECT * FROM samples")
+        by_id = {s["id"]: s for s in samples}
+        if split:
+            values = [v for v in values if by_id[v["sample_id"]]["split"] == split]
         if sample_ids is not None:
             values = [v for v in values if v["sample_id"] in sample_ids]
         if not values:
             raise ValueError("Human-confirmed reviews required")
+        if purpose == "evaluation":
+            selected_hashes = [image_identity(by_id[v["sample_id"]]) for v in values]
+            other_hashes = {image_identity(s) for s in samples if s["split"] != split}
+            if (
+                len(set(selected_hashes)) != len(selected_hashes)
+                or set(selected_hashes) & other_hashes
+            ):
+                raise ValueError("평가용 데이터에 중복 또는 split leakage가 있습니다.")
         fp = digest(
             {
+                "purpose": purpose,
+                "split": split,
                 "dataset": dataset["fingerprint"],
                 "items": [(v["sample_id"], v["labels"], v["revision"]) for v in values],
             }
@@ -144,6 +178,20 @@ def create_golden(project, run_id, name, sample_ids=None):
             fp=fp,
             time=now(),
         )
+        execute(
+            con,
+            "INSERT INTO golden_metadata VALUES (:id,:purpose,:split,:run,:payload)",
+            id=gid,
+            purpose=purpose,
+            split=split or "mixed",
+            run=run_id,
+            payload=canonical(
+                {
+                    "dataset_fingerprint": dataset["fingerprint"],
+                    "duplicate_check": purpose == "evaluation",
+                }
+            ),
+        )
         for v in values:
             execute(
                 con,
@@ -153,7 +201,14 @@ def create_golden(project, run_id, name, sample_ids=None):
                 labels=v["labels"],
                 revision=v["revision"],
             )
-        return {"id": gid, "name": name, "samples": len(values), "fingerprint": fp}
+        return {
+            "id": gid,
+            "name": name,
+            "samples": len(values),
+            "fingerprint": fp,
+            "purpose": purpose,
+            "split": split,
+        }
 
 
 def evaluate_golden(project, golden_id):
@@ -178,7 +233,12 @@ def evaluate_golden(project, golden_id):
                     **label_metrics(truth, predictions),
                 }
             )
-        return {"golden": gold, "runs": result}
+        metadata = rows(con, "SELECT * FROM golden_metadata WHERE set_id=:id", id=golden_id)
+        return {
+            "golden": gold,
+            "purpose": metadata[0] if metadata else {"purpose": "legacy-unspecified"},
+            "runs": result,
+        }
 
 
 def model_evaluation(project, golden_id, name, predictions):
@@ -194,7 +254,12 @@ def model_evaluation(project, golden_id, name, predictions):
             raise ValueError("Model predictions must cover exactly the golden sample IDs")
         for labels in predictions.values():
             validate_labels(labels)
+        metadata = rows(
+            con, "SELECT purpose,split FROM golden_metadata WHERE set_id=:id", id=golden_id
+        )
         report = {
+            "purpose": metadata[0]["purpose"] if metadata else "legacy-unspecified",
+            "split": metadata[0]["split"] if metadata else "unspecified",
             "name": name,
             "kind": "change_detection_model",
             "golden_id": golden_id,
@@ -246,3 +311,71 @@ def model_comparison(project):
             json.loads(r["payload"])
             for r in rows(con, "SELECT * FROM model_evaluations ORDER BY created_at")
         ]
+
+
+def review_report(project, run_id):
+    """Per-split/type correction counts and explicitly estimated interaction time."""
+    from collections import defaultdict
+
+    from llm_change_tool.core.reviews import review_queue
+
+    items = review_queue(project, run_id)
+    with transaction(project) as con:
+        effort = one(
+            con,
+            """SELECT coalesce(sum(e.seconds),0) seconds FROM review_effort e
+              JOIN reviews v ON v.revision=e.revision WHERE v.run_id=:run""",
+            run=run_id,
+        )["seconds"]
+        audit = {
+            r["sample_id"]
+            for r in rows(con, "SELECT sample_id FROM audit_samples WHERE run_id=:run", run=run_id)
+        }
+        selections = rows(
+            con,
+            """SELECT p.payload FROM plan_selections p JOIN llm_runs r
+                             ON r.plan_id=p.plan_id WHERE r.id=:run""",
+            run=run_id,
+        )
+    groups = defaultdict(lambda: {"total": 0, "completed": 0, "modified": 0})
+    done = []
+    for item in items:
+        group = groups[item["split"] + "/" + (item["error_type"] or "unclassified")]
+        group["total"] += 1
+        if item["review_state"] == "DONE" and item["review_current"]:
+            group["completed"] += 1
+            done.append(item)
+            group["modified"] += int(
+                json.loads(item["reviewed_labels"]) != json.loads(item["original_labels"])
+            )
+    audited = [s for s in done if s["id"] in audit]
+    changed = sum(
+        json.loads(s["reviewed_labels"]) != json.loads(s["original_labels"]) for s in done
+    )
+    audit_changed = sum(
+        json.loads(s["reviewed_labels"]) != json.loads(s["original_labels"]) for s in audited
+    )
+    return {
+        "run_id": run_id,
+        "completed": len(done),
+        "modified": changed,
+        "modification_rate": changed / len(done) if done else None,
+        "by_error_type": dict(groups),
+        "estimated_interaction_seconds": effort,
+        "seconds_per_completed": effort / len(done) if done else None,
+        "timing_note": "입력 간격 최대 30초만 합산한 추정치. 검수 화면 밖·과거 버전 작업 시간은 포함하지 않습니다.",
+        "auto_audit": {
+            "selected": len(audit),
+            "completed": len(audited),
+            "corrected": audit_changed,
+            "observed_error_rate": audit_changed / len(audited) if audited else None,
+        },
+        "selection": json.loads(selections[0]["payload"]) if selections else None,
+    }
+
+
+def export_review_report(project, run_id):
+    report = review_report(project, run_id)
+    path = project.root / "exports" / ("review-report-" + uuid4().hex + ".json")
+    path.write_text(canonical(report), encoding="utf-8")
+    return {"path": str(path), **report}

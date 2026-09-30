@@ -2,12 +2,13 @@ import json
 from uuid import uuid4
 
 from llm_change_tool.core.datasets import blocking_issues, verify_sources
-from llm_change_tool.core.labels import digest
+from llm_change_tool.core.labels import canonical, digest
 from llm_change_tool.core.projects import now
+from llm_change_tool.core.sampling import balanced_sample, selection_report
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
-def create_plan(project, mode="pilot"):
+def create_plan(project, mode="pilot", seed="20260324"):
     if mode not in ("pilot", "production"):
         raise ValueError("Invalid plan mode")
     errors = verify_sources(project, mode)
@@ -17,14 +18,14 @@ def create_plan(project, mode="pilot"):
         )
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
-        samples = rows(con, "SELECT id,split,source,logical_key FROM samples ORDER BY logical_key")
+        samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
         if mode == "production":
             selected = []
             for split in ("train", "val", "test"):
                 group = [s for s in samples if s["source"] == "errors" and s["split"] == split]
                 if len(group) < 1000:
                     raise ValueError(f"errors/{split}: at least 1000 valid samples required")
-                selected.extend(group[:1000])
+                selected.extend(balanced_sample(group, 1000, seed))
         else:
             selected = samples
         if not selected:
@@ -44,6 +45,17 @@ def create_plan(project, mode="pilot"):
             fp=fp,
             time=now(),
         )
+        if mode == "production":
+            execute(
+                con,
+                "INSERT INTO plan_selections VALUES (:id,:payload)",
+                id=pid,
+                payload=canonical(
+                    selection_report(
+                        [s for s in samples if s["source"] == "errors"], selected, seed
+                    )
+                ),
+            )
         for sid in ids:
             execute(con, "INSERT INTO work_plan_items VALUES (:pid,:sid)", pid=pid, sid=sid)
         return pid

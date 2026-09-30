@@ -1,4 +1,5 @@
 import json
+import time
 
 from PIL import ImageChops
 from PySide6.QtCore import Qt, QTimer
@@ -34,6 +35,7 @@ from llm_change_tool.ui.image_view import ImageView
 from llm_change_tool.ui.tasks import Task
 
 SIGNALS = {
+    "auto_audit": "자동 유지 표본 검수",
     "source_labels": "원본 라벨 누락·모순 — 필수 검수",
     "change_mismatch": "변화 여부 불일치",
     "detail_mismatch": "세부 라벨 불일치",
@@ -58,6 +60,8 @@ class ReviewWidget(QWidget):
         self.task = None
         self.images = None
         self.loaded_sample_id = None
+        self.effort_seconds = 0.0
+        self.last_interaction = time.monotonic()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -170,7 +174,7 @@ class ReviewWidget(QWidget):
                 if "fixed" in field
                 else field["title"] + "의 변화 여부"
             )
-            box.toggled.connect(self.changed)
+            box.checkStateChanged.connect(self.changed)
             container = QWidget()
             centered = QHBoxLayout(container)
             centered.setContentsMargins(0, 0, 0, 0)
@@ -339,9 +343,24 @@ class ReviewWidget(QWidget):
         )
         self.notes.toggle.setChecked(True)
 
+    def showEvent(self, event):
+        self.last_interaction = time.monotonic()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.last_interaction = time.monotonic()
+        super().hideEvent(event)
+
+    def track_effort(self):
+        stamp = time.monotonic()
+        if self.isVisible() and not self.loading and self.loaded_sample_id:
+            self.effort_seconds += min(30.0, max(0, stamp - self.last_interaction))
+        self.last_interaction = stamp
+
     def changed(self, *args, invalidate_english=True):
         if self.loading:
             return
+        self.track_effort()
         if invalidate_english:
             self.reason_en.blockSignals(True)
             self.reason_en.clear()
@@ -356,6 +375,8 @@ class ReviewWidget(QWidget):
             self.save("DRAFT")
 
     def load_current(self):
+        self.effort_seconds = 0.0
+        self.last_interaction = time.monotonic()
         self.timer.stop()
         self.flash.stop()
         self.flicker.setChecked(False)
@@ -555,13 +576,19 @@ class ReviewWidget(QWidget):
         if not self.items or self.loading or self.loaded_sample_id != self.items[self.index]["id"]:
             return False
         sample = self.items[self.index]
-        if any(box.checkState() == Qt.CheckState.PartiallyChecked for box in self.boxes.values()):
+        if state == "DONE" and any(
+            box.checkState() == Qt.CheckState.PartiallyChecked for box in self.boxes.values()
+        ):
             self.decision_hint.setText("미확정 라벨을 변화/없음으로 선택한 뒤 저장하세요.")
             return False
-        labels = {k: int(box.isChecked()) for k, box in self.boxes.items()}
+        labels = {
+            k: None if box.checkState() == Qt.CheckState.PartiallyChecked else int(box.isChecked())
+            for k, box in self.boxes.items()
+        }
         for f in FIELDS:
-            if f.get("parent") and labels[f["key"]]:
+            if state == "DONE" and f.get("parent") and labels[f["key"]]:
                 labels[f["parent"]] = 1
+        self.track_effort()
         try:
             revision = save_review(
                 self.project,
@@ -573,7 +600,9 @@ class ReviewWidget(QWidget):
                 state,
                 sample["revision"],
                 reason_en=self.reason_en.text(),
+                elapsed_seconds=self.effort_seconds,
             )
+            self.effort_seconds = 0.0
             sample.update(
                 revision=revision,
                 reviewed_labels=json.dumps(labels),
@@ -584,8 +613,8 @@ class ReviewWidget(QWidget):
             self.dirty = False
             self.timer.stop()
             self.loading = True
-            for key, box in self.boxes.items():
-                box.setChecked(bool(labels[key]))
+            for field in FIELDS:
+                self.set_label_value(field, labels[field["key"]])
             self.loading = False
             self.status.setText(f"{STATES.get(state, state)} · 이력 #{revision}")
             self.progress.setText(

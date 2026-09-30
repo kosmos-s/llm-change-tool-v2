@@ -243,11 +243,57 @@ class ResultPanel(QFrame):
                 self.progress.show()
             elif "errors" in value and "samples" in value:
                 count = len(value["errors"])
-                summary = f"데이터 {value['samples']:,}건 확인 · 품질 오류 {count:,}건"
+                summary = f"데이터 {value['samples']:,}건 확인 · 품질 확인 사항 {count:,}건"
                 level = "warning" if count else "success"
                 rows = [(e.get("path", "데이터"), e.get("error", "")) for e in value["errors"]]
                 if not count:
                     summary += "\n이제 AI 작업을 만들고 분석을 시작하세요."
+            elif "ready" in value and "split_counts" in value:
+                ready = value["ready"]
+                level = "success" if ready else "warning"
+                summary = (
+                    "데이터 복사본 준비 가능"
+                    if ready
+                    else "데이터 준비 차단 · 아래 항목을 해결하세요."
+                )
+                if "path" in value:
+                    self.output_path = str(value["path"])
+                    summary = "새 데이터셋 생성 및 재검사 완료\n" + self.output_path
+                rows = [
+                    ("포함 / 제외", f"{value['included']} / {value['excluded']}"),
+                    (
+                        "본작업 최소 수량",
+                        "충족" if value["production_size_ready"] else "미달 · split별 1,000건 필요",
+                    ),
+                ]
+                rows += [("해결 필요", str(p)) for p in value.get("problems", [])]
+                rows += [(split, f"{count}건") for split, count in value["split_counts"].items()]
+            elif "by_error_type" in value:
+                summary = "검수 수정률·표본 검사·시간 보고서"
+                if "path" in value:
+                    self.output_path = str(value["path"])
+                rate = value["modification_rate"]
+                rows = [
+                    ("완료 / 수정", f"{value['completed']} / {value['modified']}"),
+                    ("원본 수정률", f"{rate:.1%}" if rate is not None else "미확정"),
+                    ("추정 입력 시간", f"{value['estimated_interaction_seconds']:.1f}초"),
+                    ("시간 측정 범위", value["timing_note"]),
+                ]
+                audit = value["auto_audit"]
+                observed = audit["observed_error_rate"]
+                rows += [
+                    ("자동 유지 표본 완료 / 선정", f"{audit['completed']} / {audit['selected']}"),
+                    ("완료 표본 오류율", f"{observed:.1%}" if observed is not None else "미확정"),
+                ]
+                rows += [
+                    (key, f"완료 {v['completed']} · 수정 {v['modified']}")
+                    for key, v in value["by_error_type"].items()
+                ]
+                if value.get("selection"):
+                    rows.append(("표본 seed", value["selection"]["seed"]))
+            elif "audit_selected" in value:
+                summary = f"자동 유지 {value['audit_selected']}건을 필수 검수 목록에 추가했습니다."
+                rows = [("표본 seed", value["seed"])]
             elif "path" in value:
                 self.output_path = str(value["path"])
                 summary = "파일 저장 완료\n" + self.output_path

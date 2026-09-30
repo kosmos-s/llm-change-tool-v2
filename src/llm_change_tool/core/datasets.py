@@ -134,6 +134,8 @@ def scan_dataset(root: Path, progress=lambda value: None):
                     with Image.open(image) as im:
                         sizes[role] = im.size
                         im.verify()
+                    with Image.open(image) as decoded:
+                        decoded.load()
                     paths[role] = image_rel
                     used_images.add(image_rel)
             if t1 and sizes["t1"] != sizes["t2"]:

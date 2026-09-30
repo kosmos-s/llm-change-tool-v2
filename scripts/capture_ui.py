@@ -122,15 +122,22 @@ def main():
             (3, "quality"),
             (4, "team"),
             (5, "dashboard"),
+            (6, "data-quality"),
         ]:
             window.navigate(index)
             if index == 3:
                 window.results.set_result(final_gate(project, run))
             if index == 5:
                 window.analysis.set_result(dashboard(project, run))
+            if index == 6:
+                window.quality_page.refresh()
+                settle(app, lambda: window.active_task and not window.active_task.isRunning())
             settle(app)
             window.grab().save(str(args.output / f"{name}.png"))
         window.resize(1366, 768)
+        window.navigate(6)
+        settle(app)
+        window.grab().save(str(args.output / "data-quality-1366.png"))
         window.navigate(2)
         settle(app)
         window.grab().save(str(args.output / "review-1366.png"))

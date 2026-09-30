@@ -24,8 +24,10 @@ from llm_change_tool.core.metrics import (
     dashboard,
     evaluate_golden,
     export_golden_template,
+    export_review_report,
     import_model_predictions,
     model_comparison,
+    review_report,
 )
 from llm_change_tool.core.projects import restore_project
 from llm_change_tool.storage.store import rows, transaction
@@ -94,6 +96,21 @@ def add_pages(window):
     layout.addLayout(bar)
     window.analysis = DashboardPanel()
     layout.addWidget(window.analysis)
+    bar = QHBoxLayout()
+    window.button(
+        "수정률 · 검수 시간",
+        lambda: window.background(lambda p: review_report(window.project, window.run_id)),
+        bar,
+        requires="run",
+    )
+    window.button(
+        "검수 보고서 저장",
+        lambda: window.background(lambda p: export_review_report(window.project, window.run_id)),
+        bar,
+        requires="run",
+    )
+    window.button("자동 유지 표본 검수", lambda: auto_audit(window), bar, requires="run")
+    layout.addLayout(bar)
     frame, content = card(
         "기준 데이터 · AI 평가",
         "사람이 확정한 검수를 Golden Set으로 고정하고, 프롬프트와 모델별 결과를 비교합니다.",
@@ -178,11 +195,40 @@ def restore(window):
         )
 
 
+def auto_audit(window):
+    from llm_change_tool.core.reviews import select_auto_audit
+
+    count, ok = QInputDialog.getInt(window, "자동 유지 표본 검수", "검수할 개수", 30, 1, 3000)
+    if not ok:
+        return
+    seed, ok = QInputDialog.getText(
+        window, "표본 seed", "같은 seed는 같은 표본 순서를 만듭니다.", text="20260324"
+    )
+    if ok:
+        window.background(lambda p: select_auto_audit(window.project, window.run_id, count, seed))
+
+
 def new_golden(window):
     name, ok = QInputDialog.getText(window, "Golden Dataset", "Reference set 이름")
+    if not ok:
+        return
+    title, ok = QInputDialog.getItem(
+        window, "사용 목적", "목적", ["평가용", "학습용", "탐색용"], 0, False
+    )
+    if not ok:
+        return
+    purpose = {"평가용": "evaluation", "학습용": "training", "탐색용": "exploration"}[title]
+    choices = {
+        "evaluation": ["test", "val"],
+        "training": ["train"],
+        "exploration": ["train", "val", "test"],
+    }[purpose]
+    split, ok = QInputDialog.getItem(window, "데이터 분리", "split", choices, 0, False)
     if ok:
         window.background(
-            lambda p: create_golden(window.project, window.run_id, name),
+            lambda p: create_golden(
+                window.project, window.run_id, name, purpose=purpose, split=split
+            ),
             lambda v: display(window, v),
         )
 
@@ -191,10 +237,16 @@ def golden_action(window, action):
     if not window.project:
         return
     with transaction(window.project) as con:
-        sets = rows(con, "SELECT * FROM golden_sets ORDER BY created_at")
+        sets = rows(
+            con,
+            "SELECT g.*,m.purpose,m.split FROM golden_sets g LEFT JOIN golden_metadata m ON m.set_id=g.id ORDER BY g.created_at",
+        )
     if not sets:
         return window._error(ValueError("먼저 Golden Set을 고정하세요."))
-    names = [f"{s['name']} · {s['id']}" for s in sets]
+    names = [
+        f"{s['name']} · {s['purpose'] or '기존/목적 미지정'} / {s['split'] or '미지정'} · {s['id']}"
+        for s in sets
+    ]
     selected, ok = QInputDialog.getItem(window, "Golden Set", "선택", names, 0, False)
     if ok:
         gid = sets[names.index(selected)]["id"]

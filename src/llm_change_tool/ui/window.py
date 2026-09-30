@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from llm_change_tool import __version__
+from llm_change_tool import BUILD_ID, __version__
 from llm_change_tool.core.datasets import blocking_issues, import_dataset
 from llm_change_tool.core.exporting import export_run, final_gate
 from llm_change_tool.core.jobs import (
@@ -59,13 +59,14 @@ PAGES = [
     ("품질 · 내보내기", "미완료 검수와 오류를 확인한 뒤 결과를 저장하세요."),
     ("팀 검수 · 복원", "검수 결과를 주고받고 서로 다른 결정을 확인하세요."),
     ("통계 · 모델 평가", "작업 진행과 AI · 사람 · 모델의 평가 결과를 확인하세요."),
+    ("데이터 품질 · 준비", "품질 문제·중복 라벨을 확인하고 본작업 데이터를 준비하세요."),
 ]
 
 
 class MainWindow(ProjectWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"LLM Change Tool v2 · {__version__}")
+        self.setWindowTitle(f"LLM Change Tool v2 · {__version__} · {BUILD_ID}")
         self.resize(1480, 960)
         self.active_task = None
         self.job_id = None
@@ -85,6 +86,9 @@ class MainWindow(ProjectWindow):
         from llm_change_tool.ui.analysis_pages import add_pages
 
         add_pages(self)
+        from llm_change_tool.ui.quality_page import add_quality_page
+
+        add_quality_page(self)
         self.build_shell()
         self.refresh_actions()
 
@@ -236,6 +240,8 @@ class MainWindow(ProjectWindow):
         self.mode = QComboBox()
         self.mode.addItem("시험용 · 품질 경고 허용 / Mock 가능", "pilot")
         self.mode.addItem("본작업 · split별 1,000건", "production")
+        self.selection_seed = QLineEdit("20260324")
+        self.selection_seed.setToolTip("오류 유형·라벨별 균형 표본을 재현하는 난수값입니다.")
         self.provider = QComboBox()
         self.provider.addItem("Mock · 무료 시험", "mock")
         self.provider.addItem("OpenAI · 실제 분석", "openai")
@@ -260,6 +266,7 @@ class MainWindow(ProjectWindow):
         self.policy.addItem("상세 · 낮은 신뢰도도 검수", "detailed")
         left.addRow("작업 범위", self.mode)
         left.addRow("AI 공급자", self.provider)
+        left.addRow("본작업 표본 seed", self.selection_seed)
         right.addRow("검수 정책", self.policy)
         right.addRow("예상 비용 한도", self.budget)
         forms.addLayout(left, 1)
@@ -407,6 +414,7 @@ class MainWindow(ProjectWindow):
             self.results.reset()
             self.team_result.reset()
             self.analysis.reset()
+            self.quality_page.clear()
             self.refresh_jobs()
 
     def perform_project_operation(self, function, after):
@@ -503,9 +511,12 @@ class MainWindow(ProjectWindow):
                 review_policy=self.policy.currentData(),
             )
             mode = self.mode.currentData()
+            seed = self.selection_seed.text().strip() or "20260324"
             prompt = self.prompt.toPlainText()
             self.background(
-                lambda p: create_job(self.project, create_plan(self.project, mode), config, prompt),
+                lambda p: create_job(
+                    self.project, create_plan(self.project, mode, seed), config, prompt
+                ),
                 lambda value: self.refresh_jobs(value),
             )
         except Exception as exc:
@@ -575,6 +586,7 @@ class MainWindow(ProjectWindow):
                 self.prompt.setPlainText(selected["prompt"])
                 self.results.reset()
                 self.analysis.reset()
+            self.quality_page.clear()
             self.selected_run_hint.setText(
                 f"선택한 작업 · {config['provider']} / {config['model']} · 한도 ${config['cost_limit']:.2f} · 생성 당시 설정으로 실행"
             )

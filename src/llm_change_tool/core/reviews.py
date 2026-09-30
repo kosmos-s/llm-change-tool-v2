@@ -11,6 +11,7 @@ from llm_change_tool.core.labels import (
     effective_doc,
     import_labels,
     strict_json,
+    validate_draft,
     validate_labels,
 )
 from llm_change_tool.core.projects import now
@@ -33,10 +34,16 @@ def compare_run(project, run_id):
             WHERE j.run_id=:run""",
             run=run_id,
         )
+        audit_ids = {
+            r["sample_id"]
+            for r in rows(con, "SELECT sample_id FROM audit_samples WHERE run_id=:run", run=run_id)
+        }
         required = 0
         for sample in items:
             _, source_issues = import_labels(strict_json(sample["original_raw"])[0])
             signals = ["source_labels"] if source_issues else []
+            if sample["id"] in audit_ids:
+                signals.append("auto_audit")
             prediction = sample["prediction"]
             if not prediction:
                 signals.append(
@@ -103,10 +110,11 @@ def append_review(
     expected_revision=None,
     origin="local",
     reason_en=None,
+    elapsed_seconds=0,
 ):
     if state not in ("DONE", "DEFERRED", "DRAFT"):
         raise ValueError("Invalid review state")
-    validate_labels(labels)
+    (validate_labels if state == "DONE" else validate_draft)(labels)
     if not reviewer.strip() or len(reviewer) > 120:
         raise ValueError("Reviewer name is required (max 120 chars)")
     if len(reason) > 10000:
@@ -143,7 +151,17 @@ def append_review(
         time=now(),
         english=reason_en,
     )
-    return result.lastrowid
+    revision = result.lastrowid
+    if not isinstance(elapsed_seconds, (int, float)) or not 0 <= elapsed_seconds <= 86400:
+        raise ValueError("Invalid review duration")
+    if elapsed_seconds:
+        execute(
+            con,
+            "INSERT INTO review_effort VALUES (:rev,:seconds)",
+            rev=revision,
+            seconds=elapsed_seconds,
+        )
+    return revision
 
 
 def save_review(
@@ -156,6 +174,7 @@ def save_review(
     state="DONE",
     expected_revision=None,
     reason_en=None,
+    elapsed_seconds=0,
 ):
     with transaction(project) as con:
         return append_review(
@@ -168,6 +187,7 @@ def save_review(
             state,
             expected_revision,
             reason_en=reason_en,
+            elapsed_seconds=elapsed_seconds,
         )
 
 
@@ -310,3 +330,47 @@ def review_history(project, run_id, sample_id):
             run=run_id,
             sid=sample_id,
         )
+
+
+def select_auto_audit(project, run_id, count=30, seed="20260324"):
+    """Freeze a deterministic sample of unreviewed AUTO_KEEP decisions."""
+    if type(count) is not int or not 1 <= count <= 3000:
+        raise ValueError("표본 개수는 1~3000입니다.")
+    with transaction(project) as con:
+        run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
+        validate_run(con, run)
+        candidates = rows(
+            con,
+            """SELECT c.sample_id,c.signals FROM comparisons c
+            WHERE c.run_id=:run AND c.decision='AUTO_KEEP'
+            AND NOT EXISTS(SELECT 1 FROM reviews v WHERE v.run_id=c.run_id AND v.sample_id=c.sample_id)
+            AND NOT EXISTS(SELECT 1 FROM audit_samples a WHERE a.run_id=c.run_id AND a.sample_id=c.sample_id)""",
+            run=run_id,
+        )
+        if not candidates:
+            raise ValueError("미검수 자동 유지 항목이 없습니다.")
+        chosen = sorted(candidates, key=lambda s: digest([str(seed), s["sample_id"]]))[:count]
+        for sample in chosen:
+            execute(
+                con,
+                "INSERT INTO audit_samples VALUES (:run,:sid,:seed,:time)",
+                run=run_id,
+                sid=sample["sample_id"],
+                seed=str(seed),
+                time=now(),
+            )
+            signals = json.loads(sample["signals"])
+            if "auto_audit" not in signals:
+                signals.append("auto_audit")
+            execute(
+                con,
+                "UPDATE comparisons SET required=1,decision='REVIEW',signals=:signals WHERE run_id=:run AND sample_id=:sid",
+                run=run_id,
+                sid=sample["sample_id"],
+                signals=canonical(signals),
+            )
+    return {
+        "audit_selected": len(chosen),
+        "seed": str(seed),
+        "note": "필수 검수 목록에 표본을 추가했습니다.",
+    }

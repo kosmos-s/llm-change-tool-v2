@@ -7,7 +7,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from llm_change_tool.core.jobs import validate_run
-from llm_change_tool.core.labels import SCHEMA_HASH, canonical, digest, strict_json, validate_labels
+from llm_change_tool.core.labels import (
+    SCHEMA_HASH,
+    canonical,
+    digest,
+    strict_json,
+    validate_draft,
+    validate_labels,
+)
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.reviews import append_review, latest_review
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -129,7 +136,7 @@ def read_package(path):
             payload, _ = strict_json(raw)
             if payload["sample_id"] != sid:
                 raise ValueError("Sample identity mismatch")
-            validate_labels(payload["labels"])
+            (validate_labels if payload["state"] == "DONE" else validate_draft)(payload["labels"])
             if (
                 payload["state"] not in ("DONE", "DEFERRED")
                 or not isinstance(payload["reviewer"], str)

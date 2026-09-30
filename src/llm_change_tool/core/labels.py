@@ -73,6 +73,15 @@ def validate_labels(labels, *, policy=True):
     return labels
 
 
+def validate_draft(labels):
+    """Unresolved source values and hierarchy are permitted only before DONE."""
+    if set(labels) != set(KEYS):
+        raise ValueError("Label keys do not match schema")
+    if any(v is not None and (type(v) is not int or v not in (0, 1)) for v in labels.values()):
+        raise ValueError("Draft labels must be 0, 1 or null")
+    return labels
+
+
 def original_labels(doc):
     result = {}
     for f in FIELDS:
