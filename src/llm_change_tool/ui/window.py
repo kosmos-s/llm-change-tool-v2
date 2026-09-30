@@ -146,8 +146,18 @@ class MainWindow(ProjectWindow):
         body.addLayout(heading)
         self.tabs.tabBar().hide()
         body.addWidget(self.tabs, 1)
+        activity_header = QHBoxLayout()
         self.activity = text_label("준비됨 · 왼쪽 메뉴에서 작업 단계를 선택하세요.", "muted")
-        body.addWidget(self.activity)
+        self.activity_percent = text_label("대기", "badge", wrap=False)
+        activity_header.addWidget(self.activity, 1)
+        activity_header.addWidget(self.activity_percent)
+        body.addLayout(activity_header)
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setRange(0, 1)
+        self.activity_progress.setValue(0)
+        self.activity_progress.setTextVisible(False)
+        self.activity_progress.setAccessibleName("현재 백그라운드 작업 진행률")
+        body.addWidget(self.activity_progress)
         row.addLayout(body, 1)
         self.setCentralWidget(shell)
         self.tabs.currentChanged.connect(self.update_navigation)
@@ -529,6 +539,8 @@ class MainWindow(ProjectWindow):
         self.task_page = self.tabs.currentIndex()
         self.task_error = False
         self.activity.setText("작업 중 · 현재 단계가 끝날 때까지 잠시 기다려 주세요.")
+        self.activity_percent.setText("진행 중")
+        self.activity_progress.setRange(0, 0)
         self.active_task = Task(function, self)
         for button in self.pipeline_buttons:
             button.setEnabled(False)
@@ -542,6 +554,12 @@ class MainWindow(ProjectWindow):
         self.active_task.start()
 
     def show_progress(self, value):
+        if isinstance(value, dict) and "current" in value and "total" in value:
+            current, total = value["current"], value["total"]
+            percent = 100.0 if total == 0 else current / total * 100
+            self.activity_progress.setRange(0, max(total, 1))
+            self.activity_progress.setValue(min(current, max(total, 1)))
+            self.activity_percent.setText(percent_text(percent))
         if isinstance(value, dict) and "state" in value:
             self.job_state = value["state"]
             self.job_provider = value.get("provider")
@@ -549,6 +567,9 @@ class MainWindow(ProjectWindow):
             if "counts" in value:
                 processed, total, completed, failed, percent = job_progress(value["counts"])
                 label = percent_text(percent)
+                self.activity_progress.setRange(0, max(total, 1))
+                self.activity_progress.setValue(processed)
+                self.activity_percent.setText(label)
                 self.job_progress.setRange(0, max(total, 1))
                 self.job_progress.setValue(processed)
                 self.job_progress_percent.setText(label)
@@ -567,6 +588,17 @@ class MainWindow(ProjectWindow):
     def task_done(self, value, after):
         self.task_error = isinstance(value, dict) and "error" in value
         self.show_progress(value)
+        has_progress = isinstance(value, dict) and (
+            ("current" in value and "total" in value) or ("state" in value and "counts" in value)
+        )
+        if self.task_error:
+            self.activity_progress.setRange(0, 1)
+            self.activity_progress.setValue(0)
+            self.activity_percent.setText("실패")
+        elif not has_progress:
+            self.activity_progress.setRange(0, 1)
+            self.activity_progress.setValue(1)
+            self.activity_percent.setText("완료")
         if self.task_page == 3:
             self.results.set_result(value)
         elif self.task_page == 4:
