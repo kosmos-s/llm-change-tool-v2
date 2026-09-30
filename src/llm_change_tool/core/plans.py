@@ -4,11 +4,54 @@ from uuid import uuid4
 from llm_change_tool.core.datasets import blocking_issues, verify_sources
 from llm_change_tool.core.labels import canonical, digest
 from llm_change_tool.core.projects import now
-from llm_change_tool.core.sampling import balanced_sample, selection_report
+from llm_change_tool.core.sampling import (
+    balanced_pilot_sample,
+    balanced_sample,
+    selection_report,
+)
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
-def create_plan(project, mode="pilot", seed="20260324"):
+def _select_samples(samples, mode, seed, sample_count):
+    if mode == "production":
+        selected = []
+        for split in ("train", "val", "test"):
+            group = [s for s in samples if s["source"] == "errors" and s["split"] == split]
+            if len(group) < 1000:
+                raise ValueError(f"errors/{split}: at least 1000 valid samples required")
+            selected.extend(balanced_sample(group, 1000, seed))
+        candidates = [s for s in samples if s["source"] == "errors"]
+        return selected, selection_report(candidates, selected, seed)
+    if sample_count is None:
+        return samples, None
+    if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count <= 0:
+        raise ValueError("시험용 표본 수는 1 이상의 정수여야 합니다.")
+    selected_count = min(sample_count, len(samples))
+    selected = balanced_pilot_sample(samples, selected_count, seed)
+    return selected, selection_report(
+        samples, selected, seed, pilot=True, requested_count=sample_count
+    )
+
+
+def preview_plan(project, mode="pilot", seed="20260324", sample_count=50):
+    if mode not in ("pilot", "production"):
+        raise ValueError("Invalid plan mode")
+    errors = verify_sources(project, mode)
+    if errors:
+        raise ValueError(
+            f"Dataset quality errors: {len(errors)}; fix sources in a new project if changed"
+        )
+    with transaction(project) as con:
+        samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
+    selected, report = _select_samples(samples, mode, seed, sample_count)
+    if not selected:
+        raise ValueError("Empty plan")
+    return report or selection_report(
+        samples, selected, seed, pilot=True, requested_count=len(selected)
+    )
+
+
+def create_plan(project, mode="pilot", seed="20260324", sample_count=None):
     if mode not in ("pilot", "production"):
         raise ValueError("Invalid plan mode")
     errors = verify_sources(project, mode)
@@ -19,15 +62,7 @@ def create_plan(project, mode="pilot", seed="20260324"):
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
-        if mode == "production":
-            selected = []
-            for split in ("train", "val", "test"):
-                group = [s for s in samples if s["source"] == "errors" and s["split"] == split]
-                if len(group) < 1000:
-                    raise ValueError(f"errors/{split}: at least 1000 valid samples required")
-                selected.extend(balanced_sample(group, 1000, seed))
-        else:
-            selected = samples
+        selected, report = _select_samples(samples, mode, seed, sample_count)
         if not selected:
             raise ValueError("Empty plan")
         ids = sorted(s["id"] for s in selected)
@@ -45,16 +80,12 @@ def create_plan(project, mode="pilot", seed="20260324"):
             fp=fp,
             time=now(),
         )
-        if mode == "production":
+        if report:
             execute(
                 con,
                 "INSERT INTO plan_selections VALUES (:id,:payload)",
                 id=pid,
-                payload=canonical(
-                    selection_report(
-                        [s for s in samples if s["source"] == "errors"], selected, seed
-                    )
-                ),
+                payload=canonical(report),
             )
         for sid in ids:
             execute(con, "INSERT INTO work_plan_items VALUES (:pid,:sid)", pid=pid, sid=sid)

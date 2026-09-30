@@ -1,4 +1,4 @@
-"""Stable balanced allocation across error type and original-label strata."""
+"""Stable balanced allocation across source, split, error and label strata."""
 
 import json
 from collections import Counter, defaultdict
@@ -12,12 +12,16 @@ def stratum(sample):
     return sample["error_type"] + ":" + signature
 
 
-def balanced_sample(samples, count, seed):
+def pilot_stratum(sample):
+    return "/".join((sample["source"], sample["split"], stratum(sample)))
+
+
+def _balanced_sample(samples, count, seed, group_key):
     if not 0 <= count <= len(samples):
         raise ValueError("Invalid sample count")
     groups = defaultdict(list)
     for sample in samples:
-        groups[stratum(sample)].append(sample)
+        groups[group_key(sample)].append(sample)
     for group in groups.values():
         group.sort(key=lambda s: digest([str(seed), s["id"]]))
     keys = sorted(groups, key=lambda k: digest([str(seed), k]))
@@ -32,18 +36,30 @@ def balanced_sample(samples, count, seed):
     return result
 
 
-def distribution(samples):
-    return dict(sorted(Counter(s["split"] + "/" + stratum(s) for s in samples).items()))
+def balanced_sample(samples, count, seed):
+    return _balanced_sample(samples, count, seed, stratum)
 
 
-def selection_report(samples, selected, seed):
+def balanced_pilot_sample(samples, count, seed):
+    return _balanced_sample(samples, count, seed, pilot_stratum)
+
+
+def distribution(samples, *, pilot=False):
+    key = pilot_stratum if pilot else lambda sample: sample["split"] + "/" + stratum(sample)
+    return dict(sorted(Counter(key(sample) for sample in samples).items()))
+
+
+def selection_report(samples, selected, seed, *, pilot=False, requested_count=None):
     return {
-        "algorithm": "balanced-error-label-v1",
+        "algorithm": (
+            "balanced-source-split-error-label-v1" if pilot else "balanced-error-label-v1"
+        ),
         "seed": str(seed),
         "candidate_count": len(samples),
+        "requested_count": requested_count,
         "selected_count": len(selected),
-        "candidates": distribution(samples),
-        "selected": distribution(selected),
+        "candidates": distribution(samples, pilot=pilot),
+        "selected": distribution(selected, pilot=pilot),
         "selected_ids_hash": digest(sorted(s["id"] for s in selected)),
         "note": "Strata are balanced, not population-proportional; do not interpret as population performance.",
     }

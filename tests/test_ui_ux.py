@@ -141,8 +141,24 @@ def test_existing_openai_job_reveals_credentials_without_api_call(imported):
     assert window.job_id == job
     assert window.provider.currentData() == "openai"
     assert window.api_settings.isVisible()
-    assert window.model.text() == "test-model"
+    assert window.model.currentData() == "test-model"
     assert "test-model" in window.selected_run_hint.text()
     assert window.start_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.set_project(create_project(tmp_path / "project", "선택 설정"))
+    assert window.pilot_count.currentText() == "50"
+    assert window.model.findData("gpt-4o-mini") >= 0
+    assert window.model.findData("gpt-6-luna") >= 0
+    assert window.model.findData("gpt-6.1-sol") >= 0
+    window.provider.setCurrentIndex(window.provider.findData("openai"))
+    window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
+    assert "입력 $0.1" in window.model_price_hint.text()
+    assert "출력 $0.5" in window.model_price_hint.text()
     window.close()
     app.processEvents()

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -36,7 +37,8 @@ from llm_change_tool.core.jobs import (
     update_budget,
 )
 from llm_change_tool.core.labels import prompt_text
-from llm_change_tool.core.plans import create_plan
+from llm_change_tool.core.model_catalog import OPENAI_MODELS, PRICE_CHECKED_AT, model_spec
+from llm_change_tool.core.plans import create_plan, preview_plan
 from llm_change_tool.core.reviews import compare_run
 from llm_change_tool.storage.store import one, rows, transaction
 from llm_change_tool.ui.components import (
@@ -244,32 +246,37 @@ class MainWindow(ProjectWindow):
         self.mode.addItem("시험용 · 품질 경고 허용 / Mock 가능", "pilot")
         self.mode.addItem("본작업 · split별 1,000건", "production")
         self.selection_seed = QLineEdit("20260324")
-        self.selection_seed.setToolTip("오류 유형·라벨별 균형 표본을 재현하는 난수값입니다.")
+        self.selection_seed.setToolTip("출처·split·오류 유형·라벨별 균형 표본을 재현하는 값입니다.")
+        self.pilot_count = QComboBox()
+        self.pilot_count.setEditable(True)
+        self.pilot_count.addItems(["30", "50", "100"])
+        self.pilot_count.setCurrentText("50")
+        self.pilot_count.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.pilot_count.lineEdit().setValidator(QIntValidator(1, 100000, self))
+        self.pilot_count.setToolTip("30·50·100건 중 선택하거나 원하는 수를 직접 입력합니다.")
         self.provider = QComboBox()
         self.provider.addItem("Mock · 무료 시험", "mock")
         self.provider.addItem("OpenAI · 실제 분석", "openai")
         self.provider.setToolTip("mock: API 호출 없는 시험 분석 / openai: 실제 AI 분석")
-        self.model = QLineEdit("gpt-4o-mini")
+        self.model = QComboBox()
+        for spec in OPENAI_MODELS:
+            self.model.addItem(spec.label, spec.model)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText("API Key · 이 화면의 메모리에만 유지")
-        self.price_in, self.price_out, self.budget = (
-            QDoubleSpinBox(),
-            QDoubleSpinBox(),
-            QDoubleSpinBox(),
-        )
-        for spin in (self.price_in, self.price_out, self.budget):
-            spin.setRange(0, 1000)
-            spin.setDecimals(4)
-            spin.setPrefix("$ ")
-            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.budget = QDoubleSpinBox()
+        self.budget.setRange(0, 1000)
+        self.budget.setDecimals(4)
+        self.budget.setPrefix("$ ")
+        self.budget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.budget.setValue(5)
         self.policy = QComboBox()
         self.policy.addItem("기본 · 불일치 중심으로 검수", "core")
         self.policy.addItem("상세 · 낮은 신뢰도도 검수", "detailed")
         left.addRow("작업 범위", self.mode)
         left.addRow("AI 공급자", self.provider)
-        left.addRow("본작업 표본 seed", self.selection_seed)
+        left.addRow("시험용 표본 수 (건)", self.pilot_count)
+        left.addRow("표본 선택 seed", self.selection_seed)
         right.addRow("검수 정책", self.policy)
         right.addRow("예상 비용 한도", self.budget)
         forms.addLayout(left, 1)
@@ -281,26 +288,33 @@ class MainWindow(ProjectWindow):
         api.setContentsMargins(0, 8, 0, 0)
         api.addRow("모델", self.model)
         api.addRow("API Key", self.key)
-        prices = QHBoxLayout()
-        prices.addWidget(text_label("입력 / 1M 토큰"))
-        prices.addWidget(self.price_in)
-        prices.addWidget(text_label("출력 / 1M 토큰"))
-        prices.addWidget(self.price_out)
-        api.addRow("현재 단가 (USD)", prices)
+        self.model_price_hint = text_label("", "muted")
+        api.addRow("자동 단가", self.model_price_hint)
         self.approve_api = QCheckBox("선택한 이미지를 OpenAI로 전송하고 유료 분석을 실행합니다.")
         api.addRow(self.approve_api)
         self.api_settings.hide()
         content.addWidget(self.api_settings)
         self.provider.currentIndexChanged.connect(self.provider_changed)
+        self.model.currentIndexChanged.connect(self.model_changed)
+        self.mode.currentIndexChanged.connect(self.mode_changed)
+        self.pilot_count.currentTextChanged.connect(self.selection_changed)
+        self.selection_seed.textChanged.connect(self.selection_changed)
         self.provider_changed()
+        self.model_changed()
+        self.mode_changed()
         self.prompt = QTextEdit()
         self.prompt.setPlainText(prompt_text())
         self.prompt.setMinimumHeight(170)
         content.addWidget(Foldout("고급 설정 · 분석 프롬프트", self.prompt))
         bar = QHBoxLayout()
+        self.button("표본 미리보기", self.preview_selection, bar)
         self.button("이 설정으로 작업 만들기", self.new_job, bar, primary=True)
         bar.addWidget(text_label("작업 생성만으로 API가 호출되지는 않습니다.", "muted"), 1)
         content.addLayout(bar)
+        self.selection_hint = text_label(
+            "시험용 50건을 출처·split·오류 유형·라벨 기준으로 균형 추출합니다.", "muted"
+        )
+        content.addWidget(self.selection_hint)
         layout.addWidget(frame)
         frame, content = card("3  분석 실행 · 검수로 이동")
         bar = QHBoxLayout()
@@ -375,6 +389,74 @@ class MainWindow(ProjectWindow):
         live = self.provider.currentData() == "openai"
         self.api_settings.setVisible(live)
         self.budget.setEnabled(live)
+        self.model_changed()
+
+    def model_changed(self, *args):
+        model = self.model.currentData()
+        try:
+            spec = model_spec(model)
+        except ValueError:
+            self.model_price_hint.setText("기존 작업에 저장된 모델·단가를 사용합니다.")
+            return
+        self.model_price_hint.setText(
+            f"입력 ${spec.input_price:g} / 출력 ${spec.output_price:g} · 1M 토큰 기준 · {PRICE_CHECKED_AT} 확인값"
+        )
+
+    def pilot_sample_count(self):
+        value = self.pilot_count.currentText().strip()
+        if not value:
+            raise ValueError("시험용 표본 수를 입력하세요.")
+        count = int(value)
+        if not 1 <= count <= 100000:
+            raise ValueError("시험용 표본 수는 1~100,000건이어야 합니다.")
+        return count
+
+    def mode_changed(self, *args):
+        pilot = self.mode.currentData() == "pilot"
+        self.pilot_count.setEnabled(pilot)
+        self.selection_changed()
+
+    def selection_changed(self, *args):
+        if not hasattr(self, "selection_hint"):
+            return
+        if self.mode.currentData() == "production":
+            self.selection_hint.setText(
+                "본작업은 errors의 train·val·test에서 각 1,000건, 총 3,000건을 균형 추출합니다."
+            )
+            return
+        count = self.pilot_count.currentText().strip() or "?"
+        self.selection_hint.setText(
+            f"시험용 {count}건을 출처·split·오류 유형·라벨 기준으로 균형 추출합니다."
+        )
+
+    def show_selection_preview(self, report):
+        selected = report["selected"]
+        sources, splits = {}, {}
+        for key, count in selected.items():
+            source, split, *_ = key.split("/")
+            sources[source] = sources.get(source, 0) + count
+            splits[split] = splits.get(split, 0) + count
+        source_text = " · ".join(f"{key} {value:,}" for key, value in sorted(sources.items()))
+        split_text = " · ".join(f"{key} {value:,}" for key, value in sorted(splits.items()))
+        requested = report.get("requested_count")
+        shortage = (
+            " · 전체 수가 부족해 가능한 항목만 선택" if requested > report["selected_count"] else ""
+        )
+        self.selection_hint.setText(
+            f"미리보기 · {report['selected_count']:,}건 · {source_text} · {split_text}{shortage}"
+        )
+
+    def preview_selection(self):
+        try:
+            mode = self.mode.currentData()
+            count = self.pilot_sample_count() if mode == "pilot" else None
+            seed = self.selection_seed.text().strip() or "20260324"
+            self.background(
+                lambda p: preview_plan(self.project, mode, seed, count),
+                self.show_selection_preview if mode == "pilot" else None,
+            )
+        except Exception as exc:
+            self._error(exc)
 
     def build_results(self):
         page = QWidget()
@@ -474,8 +556,9 @@ class MainWindow(ProjectWindow):
                     f"진행률 · {processed:,} / {total:,}건 처리 · 성공 {completed:,}건 · 실패 {failed:,}건"
                 )
             if "cost_limit" in value:
+                total = sum(value.get("counts", {}).values())
                 self.selected_run_hint.setText(
-                    f"선택 작업 · {value['provider']} / {value['model']} · 예산 ${value['cost_limit']:.4f} · 모델·프롬프트 유지"
+                    f"선택 작업 · {value['provider']} / {value['model']} · {total:,}건 · 예산 ${value['cost_limit']:.4f} · 모델·프롬프트 유지"
                 )
         message = self.log.set_result(value)
         if hasattr(self, "activity"):
@@ -526,20 +609,27 @@ class MainWindow(ProjectWindow):
 
     def new_job(self):
         try:
+            provider = self.provider.currentData()
+            model = self.model.currentData()
+            spec = model_spec(model) if provider == "openai" else None
             config = RunConfig(
-                provider=self.provider.currentData(),
-                model=self.model.text().strip(),
-                input_price=self.price_in.value(),
-                output_price=self.price_out.value(),
+                provider=provider,
+                model=model,
+                input_price=spec.input_price if spec else 0,
+                output_price=spec.output_price if spec else 0,
                 cost_limit=self.budget.value(),
                 review_policy=self.policy.currentData(),
             )
             mode = self.mode.currentData()
+            count = self.pilot_sample_count() if mode == "pilot" else None
             seed = self.selection_seed.text().strip() or "20260324"
             prompt = self.prompt.toPlainText()
             self.background(
                 lambda p: create_job(
-                    self.project, create_plan(self.project, mode, seed), config, prompt
+                    self.project,
+                    create_plan(self.project, mode, seed, sample_count=count),
+                    config,
+                    prompt,
                 ),
                 lambda value: self.refresh_jobs(value),
             )
@@ -552,7 +642,10 @@ class MainWindow(ProjectWindow):
         with transaction(self.project) as con:
             jobs = rows(
                 con,
-                "SELECT j.*,r.created_at,r.config FROM jobs j JOIN llm_runs r ON r.id=j.run_id ORDER BY r.created_at DESC",
+                """SELECT j.*,r.created_at,r.config,p.mode,
+                (SELECT count(*) FROM work_plan_items i WHERE i.plan_id=p.id) item_count
+                FROM jobs j JOIN llm_runs r ON r.id=j.run_id
+                JOIN work_plans p ON p.id=r.plan_id ORDER BY r.created_at DESC""",
             )
             count = one(con, "SELECT count(*) AS n FROM samples")["n"]
             datasets = rows(con, "SELECT quality FROM datasets")
@@ -570,7 +663,7 @@ class MainWindow(ProjectWindow):
         for job in jobs:
             config = json.loads(job["config"])
             self.jobs.addItem(
-                f"{STATES.get(job['state'], job['state'])} · {config['provider']} · {job['created_at'][:16]}",
+                f"{STATES.get(job['state'], job['state'])} · {config['provider']} · {job['item_count']:,}건 · {job['created_at'][:16]}",
                 job["id"],
             )
         index = self.jobs.findData(current)
@@ -587,7 +680,8 @@ class MainWindow(ProjectWindow):
             with transaction(self.project) as con:
                 selected = one(
                     con,
-                    """SELECT r.id AS run_id,r.config,r.prompt,p.mode
+                    """SELECT r.id AS run_id,r.config,r.prompt,p.mode,
+                    (SELECT count(*) FROM work_plan_items i WHERE i.plan_id=p.id) item_count
                     FROM jobs j JOIN llm_runs r ON r.id=j.run_id
                     JOIN work_plans p ON p.id=r.plan_id WHERE j.id=:id""",
                     id=candidate,
@@ -602,9 +696,11 @@ class MainWindow(ProjectWindow):
             if self.run_id != run_id:
                 self.provider.setCurrentIndex(self.provider.findData(config["provider"]))
                 self.mode.setCurrentIndex(self.mode.findData(selected["mode"]))
-                self.model.setText(config["model"])
-                self.price_in.setValue(config["input_price"])
-                self.price_out.setValue(config["output_price"])
+                model_index = self.model.findData(config["model"])
+                if model_index < 0:
+                    self.model.addItem(f"{config['model']} · 기존 작업", config["model"])
+                    model_index = self.model.count() - 1
+                self.model.setCurrentIndex(model_index)
                 self.budget.setValue(config["cost_limit"])
                 self.policy.setCurrentIndex(self.policy.findData(config["review_policy"]))
                 self.prompt.setPlainText(selected["prompt"])
@@ -612,7 +708,7 @@ class MainWindow(ProjectWindow):
                 self.analysis.reset()
             self.quality_page.clear()
             self.selected_run_hint.setText(
-                f"선택한 작업 · {config['provider']} / {config['model']} · 한도 ${config['cost_limit']:.2f} · 생성 당시 설정으로 실행"
+                f"선택한 작업 · {config['provider']} / {config['model']} · {selected['item_count']:,}건 · 한도 ${config['cost_limit']:.2f} · 생성 당시 설정으로 실행"
             )
             self.job_id, self.run_id = candidate, run_id
             self.show_progress(job_info(self.project, self.job_id))

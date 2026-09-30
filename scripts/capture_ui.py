@@ -134,6 +134,12 @@ def main():
                 settle(app, lambda: window.active_task and not window.active_task.isRunning())
             settle(app)
             window.grab().save(str(args.output / f"{name}.png"))
+            if index == 1:
+                window.provider.setCurrentIndex(window.provider.findData("openai"))
+                window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
+                settle(app)
+                window.grab().save(str(args.output / "analysis-openai.png"))
+                window.provider.setCurrentIndex(window.provider.findData("mock"))
         window.resize(1366, 768)
         window.navigate(6)
         settle(app)
