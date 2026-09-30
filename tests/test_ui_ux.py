@@ -1,4 +1,5 @@
 import os
+from threading import Event
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -160,5 +161,28 @@ def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
     window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
     assert "입력 $0.1" in window.model_price_hint.text()
     assert "출력 $0.5" in window.model_price_hint.text()
+    window.close()
+    app.processEvents()
+
+
+def test_global_task_status_bar_shows_busy_and_exact_progress(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.set_project(create_project(tmp_path / "project", "상태 바"))
+    release = Event()
+
+    def work(progress):
+        release.wait(2)
+        progress({"current": 2, "total": 4})
+        return {"current": 4, "total": 4}
+
+    window.background(work, require_project=False)
+    assert window.activity_progress.minimum() == window.activity_progress.maximum() == 0
+    assert window.activity_percent.text() == "진행 중"
+    release.set()
+    until(lambda: not window.active_task.isRunning())
+    app.processEvents()
+    assert window.activity_progress.value() == window.activity_progress.maximum() == 4
+    assert window.activity_percent.text() == "100%"
     window.close()
     app.processEvents()
