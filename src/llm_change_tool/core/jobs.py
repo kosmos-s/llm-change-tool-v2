@@ -9,9 +9,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llm_change_tool.core.datasets import sample_images, verify_sources
+from llm_change_tool.core.failures import classify_failure
 from llm_change_tool.core.labels import SCHEMA_HASH, Prediction, canonical, digest, prompt_text
 from llm_change_tool.core.locking import worker_lock
-from llm_change_tool.core.plans import validate_plan
+from llm_change_tool.core.plans import plan_uses_candidates, validate_plan
 from llm_change_tool.core.projects import now
 from llm_change_tool.providers.base import ProviderFailure
 from llm_change_tool.providers.mock import MockProvider
@@ -142,7 +143,20 @@ def job_info(project, job_id):
         job["cost_limit"] = budget_limit(con, job_id, config.cost_limit)
         job["failures"] = rows(
             con,
-            "SELECT error,count(*) count FROM job_items WHERE job_id=:id AND state='FAILED' GROUP BY error ORDER BY count(*) DESC",
+            """SELECT i.error,f.domain,f.retryable,count(*) count FROM job_items i
+            LEFT JOIN job_failures f ON f.job_id=i.job_id AND f.sample_id=i.sample_id
+            WHERE i.job_id=:id AND i.state='FAILED' GROUP BY i.error,f.domain,f.retryable ORDER BY count(*) DESC""",
+            id=job_id,
+        )
+        for failure in job["failures"]:
+            if failure["domain"] is None:
+                domain, _, retryable, _ = classify_failure(code=failure["error"])
+                failure.update(domain=domain, retryable=retryable)
+        job["failure_domains"] = rows(
+            con,
+            """SELECT f.domain,count(*) count FROM job_failures f
+        JOIN job_items i ON i.job_id=f.job_id AND i.sample_id=f.sample_id
+        WHERE f.job_id=:id AND i.state='FAILED' GROUP BY f.domain""",
             id=job_id,
         )
         return job
@@ -197,10 +211,12 @@ def update_budget(project, job_id, new_limit, *, expected_limit, reason):
     return job_info(project, job_id)
 
 
-def control_job(project, job_id, action):
-    if action not in ("pause", "cancel", "retry", "reopen"):
+def control_job(project, job_id, action, *, configuration_fixed=False):
+    if action not in ("pause", "cancel", "retry", "reopen", "retry_configuration"):
         raise ValueError("Invalid action")
-    if action in ("retry", "reopen"):
+    if action == "retry_configuration" and configuration_fixed is not True:
+        raise ValueError("API 인증·결제 설정을 수정했음을 먼저 확인하세요.")
+    if action in ("retry", "reopen", "retry_configuration"):
         with worker_lock(project), transaction(project) as con:
             job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
             if action == "reopen":
@@ -221,15 +237,48 @@ def control_job(project, job_id, action):
                 return
             if job["state"] == "CANCELLED":
                 raise ValueError("Cancelled jobs cannot resume")
-            execute(
-                con,
-                "UPDATE job_items SET state='PENDING',error='' WHERE job_id=:id AND state='FAILED'",
-                id=job_id,
+            if job["state"] == "COMPLETED":
+                return
+            failed = rows(
+                con, "SELECT * FROM job_items WHERE job_id=:id AND state='FAILED'", id=job_id
             )
+            retried = 0
+            for item in failed:
+                classification = rows(
+                    con,
+                    "SELECT domain,retryable FROM job_failures WHERE job_id=:id AND sample_id=:sid",
+                    id=job_id,
+                    sid=item["sample_id"],
+                )
+                retryable = (
+                    bool(classification[0]["retryable"])
+                    if classification
+                    else classify_failure(code=item["error"])[2]
+                )
+                if action == "retry_configuration":
+                    retryable = bool(
+                        classification and classification[0]["domain"] == "configuration"
+                    )
+                if retryable:
+                    execute(
+                        con,
+                        "UPDATE job_items SET state='PENDING',error='' WHERE job_id=:id AND sample_id=:sid AND state='FAILED'",
+                        id=job_id,
+                        sid=item["sample_id"],
+                    )
+                    retried += 1
+            if action == "retry_configuration":
+                execute(
+                    con,
+                    "INSERT INTO job_control_events(job_id,action,created_at) VALUES (:job,'configuration_fixed',:time)",
+                    job=job_id,
+                    time=now(),
+                )
             execute(
                 con,
-                "UPDATE jobs SET state='PAUSED',message='Retry requested' WHERE id=:id",
+                "UPDATE jobs SET state='PAUSED',message=:message WHERE id=:id",
                 id=job_id,
+                message=f"재시도 가능 {retried}건 준비 · 재시도 불가 {len(failed) - retried}건 보존",
             )
     else:
         with transaction(project) as con:
@@ -244,6 +293,14 @@ def control_job(project, job_id, action):
 
 def _recover(con):
     # Only call while holding project OS lock: a live worker can never be recovered.
+    for item in rows(con, "SELECT job_id,sample_id FROM job_items WHERE state='RUNNING'"):
+        execute(
+            con,
+            """INSERT INTO job_failures VALUES (:job,:sid,'unknown_outcome','interrupted_unknown_outcome',0)
+        ON CONFLICT(job_id,sample_id) DO UPDATE SET domain='unknown_outcome',code='interrupted_unknown_outcome',retryable=0""",
+            job=item["job_id"],
+            sid=item["sample_id"],
+        )
     execute(con, "UPDATE attempts SET state='UNKNOWN' WHERE state='RUNNING'")
     execute(
         con,
@@ -251,7 +308,7 @@ def _recover(con):
     )
     execute(
         con,
-        "UPDATE jobs SET state='PAUSED',owner=NULL,message='Recovered after interruption; retry failed items explicitly' WHERE state='RUNNING'",
+        "UPDATE jobs SET state='PAUSED',owner=NULL,message='중단 복구: 원격 결과 미확정은 일반 재시도에서 제외됩니다. 결과·과금 내역을 확인하세요.' WHERE state='RUNNING'",
     )
 
 
@@ -272,7 +329,8 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                 return {"state": job["state"]}
         with transaction(project) as con:
             mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
-        errors = verify_sources(project, mode)
+            candidate_policy = plan_uses_candidates(con, run["plan_id"])
+        errors = verify_sources(project, mode, candidate_policy=candidate_policy)
         if errors:
             raise ValueError(f"Source integrity/quality errors: {len(errors)}")
         provider = provider or (
@@ -341,10 +399,12 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                         sid=sample["id"],
                     )
                 response = None
+                phase = "images"
                 try:
-                    response = provider.predict(
-                        sample_images(project, sample), run["prompt"], config
-                    )
+                    images = sample_images(project, sample)
+                    phase = "provider"
+                    response = provider.predict(images, run["prompt"], config)
+                    phase = "response"
                     prediction = Prediction.model_validate_json(response.raw)
                     cost = (
                         0
@@ -396,6 +456,10 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                         if isinstance(exc, ProviderFailure)
                         else ("malformed_output" if response else type(exc).__name__)
                     )
+                    domain, code, retryable, pause_all = classify_failure(
+                        exc, code=code, phase=phase
+                    )
+                    retry = retry and domain == "transient"
                     with transaction(project) as con:
                         # Unknown remote outcomes reserve full estimated cost; never erase on retry.
                         if response:
@@ -416,8 +480,24 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                                 ot=response.output_tokens,
                                 id=aid,
                             )
+                        elif phase == "images" or domain == "configuration":
+                            execute(
+                                con,
+                                "UPDATE attempts SET state='FAILED',reserved_cost=0 WHERE id=:id",
+                                id=aid,
+                            )
                         else:
                             execute(con, "UPDATE attempts SET state='UNKNOWN' WHERE id=:id", id=aid)
+                        execute(
+                            con,
+                            """INSERT INTO job_failures VALUES (:job,:sid,:domain,:code,:retryable)
+                        ON CONFLICT(job_id,sample_id) DO UPDATE SET domain=:domain,code=:code,retryable=:retryable""",
+                            job=job_id,
+                            sid=sample["id"],
+                            domain=domain,
+                            code=code,
+                            retryable=int(retryable),
+                        )
                         execute(
                             con,
                             "UPDATE job_items SET state=:state,error=:error WHERE job_id=:job AND sample_id=:sid",
@@ -426,6 +506,13 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                             job=job_id,
                             sid=sample["id"],
                         )
+                        if pause_all:
+                            execute(
+                                con,
+                                "UPDATE jobs SET state='PAUSED',owner=NULL,message=:message WHERE id=:id",
+                                id=job_id,
+                                message=f"작업 전체 설정 오류로 중지: {code}. 인증·모델·결제 설정을 확인하세요.",
+                            )
                     if retry:
                         time.sleep(min(2 ** sample["attempts"], 16))
                 with transaction(project) as con:

@@ -48,3 +48,9 @@ def one(con, sql, **values):
     if not result:
         raise ValueError("Record not found")
     return result[0]
+
+
+def has_table(con, name):
+    return bool(
+        rows(con, "SELECT name FROM sqlite_master WHERE type='table' AND name=:name", name=name)
+    )

@@ -16,7 +16,7 @@ from llm_change_tool.core.labels import (
     validate_labels,
 )
 from llm_change_tool.core.locking import worker_lock
-from llm_change_tool.core.plans import validate_plan
+from llm_change_tool.core.plans import plan_uses_candidates, validate_plan
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.reviews import latest_review, result_binding
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -144,7 +144,7 @@ def run_mode(project, run_id):
 
 
 def final_gate(project, run_id):
-    errors = verify_sources(project, run_mode(project, run_id))
+    errors = verify_run_sources(project, run_id)
     try:
         with transaction(project) as con:
             report, _, _, _ = gate_in_transaction(con, run_id)
@@ -157,7 +157,7 @@ def final_gate(project, run_id):
 
 def export_run(project, run_id, destination: Path | None = None):
     with worker_lock(project):
-        errors = verify_sources(project, run_mode(project, run_id))
+        errors = verify_run_sources(project, run_id)
         if errors:
             raise ValueError(f"Dataset quality/integrity errors: {len(errors)}")
         with transaction(project) as con:
@@ -227,6 +227,16 @@ def export_run(project, run_id, destination: Path | None = None):
                     "gate": gate,
                     "samples": entries,
                 }
+                selections = rows(
+                    con, "SELECT payload FROM plan_selections WHERE plan_id=:id", id=plan["id"]
+                )
+                if selections:
+                    manifest["selection"] = json.loads(selections[0]["payload"])
+                if plan_uses_candidates(con, plan["id"]):
+                    manifest["quality_issues"] = manifest["selection"]["inventory"]["rejected"]
+                    manifest["quality_scope"] = (
+                        "Excluded/held candidates are not exported; original integrity checks remain mandatory."
+                    )
                 (staging / "manifest.json").write_text(canonical(manifest), encoding="utf-8")
                 if destination.exists():
                     raise FileExistsError(destination)
@@ -243,3 +253,10 @@ def export_run(project, run_id, destination: Path | None = None):
                 shutil.rmtree(staging, ignore_errors=True)
                 raise
         return {"path": str(destination), "samples": len(effective), "mode": plan["mode"]}
+
+
+def verify_run_sources(project, run_id):
+    with transaction(project) as con:
+        run = one(con, "SELECT plan_id FROM llm_runs WHERE id=:id", id=run_id)
+        candidate_policy = plan_uses_candidates(con, run["plan_id"])
+    return verify_sources(project, run_mode(project, run_id), candidate_policy=candidate_policy)

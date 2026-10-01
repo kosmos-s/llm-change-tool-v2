@@ -212,6 +212,36 @@ class ResultPanel(QFrame):
         if isinstance(value, dict):
             if "error" in value:
                 summary, level = "작업을 완료하지 못했습니다.\n" + str(value["error"]), "error"
+            elif "inventory" in value and "selected_count" in value:
+                inventory = value["inventory"]
+                summary = f"고유 후보 점검 · 선정 {value['selected_count']:,}건 / 선정 가능 {inventory['eligible_count']:,}건"
+                if not value.get("ready", True):
+                    summary += "\n목표 수량 부족 · 작업 생성 전 원인을 확인하세요."
+                    level = "warning"
+                rows = [
+                    ("정책", value["policy_version"]),
+                    (
+                        "등록 / 고유 / 보류",
+                        f"{inventory['registered_count']} / {inventory['unique_count']} / {inventory['held_unique_count']}",
+                    ),
+                    ("중복 등록", str(inventory["duplicate_copies"])),
+                    ("선정 원칙", "출처 집단 우선 균형 · 부족 집단 잔여 배분 · FN/FP는 정답 아님"),
+                ]
+                for split, stat in inventory["split_counts"].items():
+                    rows.append(
+                        (
+                            split,
+                            f"등록 {stat['registered']} → 고유 {stat['unique']} → 보류 {stat['held_unique']} → 가능 {stat['eligible']} · 제외 {stat['rejected']} · 목표 {stat['target']} · 부족 {stat['shortage']}",
+                        )
+                    )
+                    rows += [
+                        (f"{split} 보류 이유", f"{reason}: {n}")
+                        for reason, n in stat["reason_counts"].items()
+                    ]
+                rows += [
+                    ("제외·비연결 파일", f"{r.get('path')}: {r.get('error')}")
+                    for r in inventory["rejected"]
+                ]
             elif "passed" in value:
                 summary = (
                     "품질 확인 통과 · 결과를 내보낼 수 있습니다."
@@ -262,7 +292,21 @@ class ResultPanel(QFrame):
                 if "cost_limit" in value:
                     rows.append(("현재 누적 예산 한도", f"${value['cost_limit']:.4f}"))
                 for failure in value.get("failures", []):
-                    rows.append((f"실패 {failure['count']:,}건", explain_error(failure["error"])))
+                    domain_label = {
+                        "data": "데이터 오류",
+                        "configuration": "인증·설정 오류",
+                        "transient": "일시 통신·서버 오류",
+                        "ai_response": "AI 응답 오류",
+                        "unknown_outcome": "원격 결과·과금 미확정",
+                        "provider": "AI 호출 오류",
+                    }.get(failure.get("domain"), "분류 미확정")
+                    rows.append(
+                        (
+                            f"실패 {failure['count']:,}건 · {domain_label}",
+                            explain_error(failure["error"])
+                            + (" · 재시도 가능" if failure.get("retryable") else " · 재시도 불가"),
+                        )
+                    )
             elif "current" in value and "total" in value:
                 percent = value["current"] / value["total"] * 100 if value["total"] else 0
                 percent_label = percent_text(percent)
