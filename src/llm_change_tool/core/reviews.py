@@ -28,9 +28,10 @@ def compare_run(project, run_id):
         config = validate_run(con, run)
         items = rows(
             con,
-            """SELECT s.*, i.error, i.state item_state,r.prediction FROM samples s
+            """SELECT s.*, i.error, i.state item_state,r.prediction,f.domain failure_domain FROM samples s
             JOIN job_items i ON i.sample_id=s.id JOIN jobs j ON j.id=i.job_id
             LEFT JOIN llm_results r ON r.sample_id=s.id AND r.run_id=j.run_id
+            LEFT JOIN job_failures f ON f.sample_id=i.sample_id AND f.job_id=i.job_id
             WHERE j.run_id=:run""",
             run=run_id,
         )
@@ -46,10 +47,17 @@ def compare_run(project, run_id):
                 signals.append("auto_audit")
             prediction = sample["prediction"]
             if not prediction:
+                failure_signal = {
+                    "data": "data_error",
+                    "configuration": "configuration_error",
+                    "transient": "transient_error",
+                    "unknown_outcome": "unknown_outcome",
+                    "ai_response": "ai_response_error",
+                }.get(sample["failure_domain"], "API_error")
                 signals.append(
                     "malformed_output"
                     if sample["error"] == "malformed_output"
-                    else "API_error"
+                    else failure_signal
                     if sample["error"]
                     else "pending"
                 )

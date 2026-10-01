@@ -79,6 +79,14 @@ class OpenAIProvider:
         except APIConnectionError as exc:
             raise ProviderFailure("connection_or_timeout", True) from exc
         except APIStatusError as exc:
+            body = exc.body if isinstance(exc.body, dict) else {}
+            nested = body.get("error")
+            nested = nested if isinstance(nested, dict) else {}
+            if exc.status_code == 429 and (
+                body.get("code") == "insufficient_quota"
+                or nested.get("code") == "insufficient_quota"
+            ):
+                raise ProviderFailure("insufficient_quota") from exc
             raise ProviderFailure(
                 f"http_{exc.status_code}", exc.status_code == 429 or exc.status_code >= 500
             ) from exc

@@ -8,7 +8,7 @@ from PIL import Image
 
 from llm_change_tool.core.labels import canonical, digest, import_labels, strict_json
 from llm_change_tool.core.projects import now
-from llm_change_tool.storage.store import execute, one, rows, transaction
+from llm_change_tool.storage.store import execute, has_table, one, rows, transaction
 
 
 def sha(path):
@@ -48,6 +48,18 @@ def quality_issues(issues, mode):
 
 def blocking_issues(issues, mode):
     return [issue for issue in quality_issues(issues, mode) if issue["severity"] == "FATAL"]
+
+
+def image_content_hash(root, paths):
+    """Exact decoded RGB identity, independent of JPEG metadata bytes."""
+    paths = json.loads(paths) if isinstance(paths, str) else paths
+    roles = ("t1", "t2") if "t1" in paths else ("combined",)
+    hashes = []
+    for role in roles:
+        with Image.open(safe_path(root, paths[role])) as image:
+            rgb = image.convert("RGB")
+            hashes.append(digest([rgb.size, hashlib.sha256(rgb.tobytes()).hexdigest()]))
+    return digest([list(roles), hashes])
 
 
 def scan_dataset(root: Path, progress=lambda value: None):
@@ -179,6 +191,7 @@ def scan_dataset(root: Path, progress=lambda value: None):
                     original_raw=raw,
                     original_labels=canonical(labels),
                     encoding=encoding,
+                    content_hash=image_content_hash(root, paths),
                 )
             )
         except Exception as exc:
@@ -214,6 +227,15 @@ def import_dataset(project, root: Path, progress=lambda value: None):
                     :paths,:hashes,:original_raw,:original_labels,:encoding)""",
                     **sample,
                 )
+        if has_table(con, "sample_contents"):
+            for sample in samples:
+                execute(
+                    con,
+                    """INSERT INTO sample_contents VALUES (:id,:hash)
+                ON CONFLICT(sample_id) DO UPDATE SET content_hash=:hash""",
+                    id=sample["id"],
+                    hash=sample["content_hash"],
+                )
         execute(
             con,
             """INSERT INTO datasets VALUES (1,:root,:fp,:quality,:time)
@@ -231,11 +253,11 @@ def import_dataset(project, root: Path, progress=lambda value: None):
     }
 
 
-def verify_sources(project, mode="production"):
+def verify_sources(project, mode="production", *, candidate_policy=False):
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
-    errors = json.loads(dataset["quality"])
+    errors = [] if candidate_policy else json.loads(dataset["quality"])
     root = Path(dataset["root"])
     for sample in samples:
         try:
@@ -247,6 +269,9 @@ def verify_sources(project, mode="production"):
                 != json.loads(sample["hashes"])["json"]
             ):
                 raise ValueError("Stored original hash mismatch")
+            expected, _ = import_labels(strict_json(sample["original_raw"])[0])
+            if expected != json.loads(sample["original_labels"]):
+                raise ValueError("Stored original labels mismatch")
         except Exception as exc:
             errors.append({"path": sample["logical_key"], "error": str(exc)})
     current = digest(sorted((s["logical_key"], json.loads(s["hashes"])) for s in samples))

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from llm_change_tool import BUILD_ID, __version__
+from llm_change_tool.core.candidates import targets
 from llm_change_tool.core.datasets import blocking_issues, import_dataset
 from llm_change_tool.core.exporting import export_run, final_gate
 from llm_change_tool.core.jobs import (
@@ -258,7 +259,16 @@ class MainWindow(ProjectWindow):
         left, right = QFormLayout(), QFormLayout()
         self.mode = QComboBox()
         self.mode.addItem("시험용 · 품질 경고 허용 / Mock 가능", "pilot")
-        self.mode.addItem("본작업 · split별 1,000건", "production")
+        self.mode.addItem("본작업 · 고유 샘플 3,000건", "production")
+        self.split_targets = {}
+        for split in ("train", "val", "test"):
+            field = QLineEdit("1000")
+            field.setValidator(QIntValidator(1, 2998, self))
+            field.setToolTip(
+                "각 1,000건은 기본값이며, 팀 합의 후 배분 변경 가능. 합계는 3,000건입니다."
+            )
+            self.split_targets[split] = field
+            right.addRow(f"{split} 목표 (건)", field)
         self.selection_seed = QLineEdit("20260324")
         self.selection_seed.setToolTip("출처·split·오류 유형·라벨별 균형 표본을 재현하는 값입니다.")
         self.pilot_count = QComboBox()
@@ -324,6 +334,8 @@ class MainWindow(ProjectWindow):
         self.mode.currentIndexChanged.connect(self.mode_changed)
         self.pilot_count.currentTextChanged.connect(self.selection_changed)
         self.selection_seed.textChanged.connect(self.selection_changed)
+        for field in self.split_targets.values():
+            field.textChanged.connect(self.selection_changed)
         self.key.textChanged.connect(self.update_api_readiness)
         self.approve_api.toggled.connect(self.update_api_readiness)
         self.budget.valueChanged.connect(self.update_cost_preview)
@@ -404,6 +416,12 @@ class MainWindow(ProjectWindow):
         )
         self.reopen_button = self.button(
             "취소 작업 다시 열기", lambda: self.control("reopen"), recovery_bar, requires="run"
+        )
+        self.button(
+            "인증·결제 수정 후 실패 복구",
+            lambda: self.control("retry_configuration"),
+            recovery_bar,
+            requires="run",
         )
         recovery_bar.addStretch()
         content.addWidget(Foldout("재시도 · 중단 작업 복구", recovery))
@@ -509,6 +527,8 @@ class MainWindow(ProjectWindow):
     def mode_changed(self, *args):
         pilot = self.mode.currentData() == "pilot"
         self.pilot_count.setEnabled(pilot)
+        for field in self.split_targets.values():
+            field.setEnabled(not pilot)
         self.selection_changed()
         self.update_cost_preview()
 
@@ -517,8 +537,8 @@ class MainWindow(ProjectWindow):
             return
         if self.mode.currentData() == "production":
             self.selection_hint.setText(
-                "본작업은 dataset+errors 전체에서 train·val·test 각 1,000건을 "
-                "출처·오류 유형·라벨별로 균형 추출합니다."
+                "본작업은 dataset+errors 전체에서 중복·충돌·split 누수를 분리한 고유 후보를 선정합니다. "
+                "train·val·test 각 1,000건은 변경 가능한 기본값이며 총 3,000건입니다."
             )
             return
         count = self.pilot_count.currentText().strip() or "?"
@@ -540,6 +560,8 @@ class MainWindow(ProjectWindow):
         shortage = (
             " · 전체 수가 부족해 가능한 항목만 선택" if requested > report["selected_count"] else ""
         )
+        if report.get("shortages"):
+            shortage += " · 본작업 생성 불가: " + str(report["shortages"])
         self.selection_hint.setText(
             f"미리보기 · {report['selected_count']:,}건 · {source_text} · {split_text}{shortage}"
         )
@@ -549,12 +571,18 @@ class MainWindow(ProjectWindow):
             mode = self.mode.currentData()
             count = self.pilot_sample_count() if mode == "pilot" else None
             seed = self.selection_seed.text().strip() or "20260324"
+            goals = self.production_targets() if mode == "production" else None
             self.background(
-                lambda p: preview_plan(self.project, mode, seed, count),
-                self.show_selection_preview if mode == "pilot" else None,
+                lambda p: preview_plan(
+                    self.project, mode, seed, count, split_targets=goals, candidate_policy=True
+                ),
+                self.show_selection_preview,
             )
         except Exception as exc:
             self._error(exc)
+
+    def production_targets(self):
+        return targets({split: int(field.text()) for split, field in self.split_targets.items()})
 
     def build_results(self):
         page = QWidget()
@@ -662,7 +690,7 @@ class MainWindow(ProjectWindow):
                 self.job_progress.setValue(processed)
                 self.job_progress_percent.setText(label)
                 self.job_progress_label.setText(
-                    f"진행률 · {processed:,} / {total:,}건 처리 · 성공 {completed:,}건 · 실패 {failed:,}건"
+                    f"진행률 · {processed:,} / {total:,}건 처리 · 성공 {completed:,}건 · 실패 {failed:,}건 · 납품 완료 여부는 최종 검증에서 확인"
                 )
             if "cost_limit" in value:
                 total = sum(value.get("counts", {}).values())
@@ -695,8 +723,8 @@ class MainWindow(ProjectWindow):
             self.analysis.set_result(value)
         if isinstance(value, dict) and "samples" in value and "errors" in value:
             self.dataset_hint.setText(
-                f"{value['samples']:,}건 · 시험용 차단 {len(blocking_issues(value['errors'], 'pilot')):,}건 · "
-                f"품질 확인 사항 {len(value['errors']):,}건 (본작업은 엄격 검사)"
+                f"등록 {value['samples']:,}건 · 확인 사항 {len(value['errors']):,}건 · "
+                "‘표본 미리보기’에서 고유 후보·보류·제외 수를 확인하세요."
             )
         if after:
             try:
@@ -744,10 +772,18 @@ class MainWindow(ProjectWindow):
             count = self.pilot_sample_count() if mode == "pilot" else None
             seed = self.selection_seed.text().strip() or "20260324"
             prompt = self.prompt.toPlainText()
+            goals = self.production_targets() if mode == "production" else None
             self.background(
                 lambda p: create_job(
                     self.project,
-                    create_plan(self.project, mode, seed, sample_count=count),
+                    create_plan(
+                        self.project,
+                        mode,
+                        seed,
+                        sample_count=count,
+                        split_targets=goals,
+                        candidate_policy=True,
+                    ),
                     config,
                     prompt,
                 ),
@@ -868,7 +904,21 @@ class MainWindow(ProjectWindow):
     def control(self, action):
         if self.job_id:
             try:
-                control_job(self.project, self.job_id, action)
+                fixed = False
+                if action == "retry_configuration":
+                    fixed = (
+                        QMessageBox.question(
+                            self,
+                            "API 설정 수정 확인",
+                            "API Key·권한·결제 설정을 수정했나요?\n설정 실패만 다시 준비합니다. 모델·프롬프트 변경은 새 작업을 만드세요.",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.No,
+                        )
+                        == QMessageBox.StandardButton.Yes
+                    )
+                    if not fixed:
+                        return
+                control_job(self.project, self.job_id, action, configuration_fixed=fixed)
                 self.show_progress(job_info(self.project, self.job_id))
             except Exception as exc:
                 self._error(exc)

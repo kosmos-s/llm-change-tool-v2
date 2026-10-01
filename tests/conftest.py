@@ -28,7 +28,13 @@ def synthetic(root, count=6):
         )
         im = Image.new("RGB", (128, 64), (i * 30 % 255, 70, 90))
         ImageDraw.Draw(im).rectangle((10 + i, 10, 30 + i, 30), fill=(200, 200, 200))
-        im.save(folder / f"{i:04d}_combined.jpg")
+        # Keep exact decoded image identity distinct in large fixtures.
+        draw = ImageDraw.Draw(im)
+        for bit in range(16):
+            draw.rectangle(
+                (bit * 8, 48, bit * 8 + 7, 63), fill="white" if i & (1 << bit) else "black"
+            )
+        im.save(folder / f"{i:04d}_combined.jpg", quality=95)
     return root
 
 

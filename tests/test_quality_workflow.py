@@ -259,7 +259,7 @@ def test_v3_upgrade_keeps_project_and_backup(tmp_path, monkeypatch):
         job = create_job(project, create_plan(project), RunConfig())
     upgraded = open_project(project.root)
     with database.connect(upgraded.database) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert con.execute("PRAGMA user_version").fetchone()[0] == database.SCHEMA_VERSION
         assert con.execute("SELECT id FROM jobs").fetchone()[0] == job
     backups = list((project.root / "backups").glob("*.sqlite3"))
     assert len(backups) == 1

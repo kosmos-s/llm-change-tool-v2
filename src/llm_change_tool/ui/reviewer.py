@@ -44,6 +44,11 @@ SIGNALS = {
     "malformed_output": "응답 형식 오류",
     "api_error": "AI 호출 오류",
     "API_error": "AI 호출 오류",
+    "data_error": "이미지·데이터 오류",
+    "configuration_error": "API 인증·모델·결제 설정 오류",
+    "transient_error": "일시 통신·서버 오류",
+    "unknown_outcome": "원격 결과·과금 미확정",
+    "ai_response_error": "AI 응답 오류",
     "pending": "분석 대기",
 }
 
