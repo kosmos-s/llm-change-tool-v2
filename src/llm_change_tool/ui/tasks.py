@@ -16,4 +16,5 @@ class Task(QThread):
         try:
             self.done.emit(self.function(self.progress.emit))
         except Exception as exc:
+            # Translate at the display boundary; retain the diagnostic in the detail panel.
             self.failed.emit(str(exc))

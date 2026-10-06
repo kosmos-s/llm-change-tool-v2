@@ -254,7 +254,7 @@ def import_dataset(project, root: Path, progress=lambda value: None):
 
 
 def verify_sources(project, mode="production", *, candidate_policy=False):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
     errors = [] if candidate_policy else json.loads(dataset["quality"])
@@ -280,8 +280,22 @@ def verify_sources(project, mode="production", *, candidate_policy=False):
     return blocking_issues(errors, mode)
 
 
+def source_identities(project):
+    """Use the same decoded RGB identity for preparation, quality and evaluation."""
+    with transaction(project, readonly=True) as con:
+        root = Path(one(con, "SELECT root FROM datasets")["root"])
+        samples = rows(con, "SELECT * FROM samples")
+        cached = {
+            r["sample_id"]: r["content_hash"] for r in rows(con, "SELECT * FROM sample_contents")
+        }
+    return {
+        sample["id"]: cached.get(sample["id"]) or image_content_hash(root, sample["paths"])
+        for sample in samples
+    }
+
+
 def sample_images(project, sample):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         root = Path(one(con, "SELECT root FROM datasets")["root"])
     paths = json.loads(sample["paths"])
     if "t1" in paths:

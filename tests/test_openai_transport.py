@@ -7,7 +7,7 @@ from PIL import Image
 
 from llm_change_tool.core.jobs import RunConfig
 from llm_change_tool.core.labels import KEYS
-from llm_change_tool.providers.base import ProviderFailure
+from llm_change_tool.providers.base import ProviderFailure, ProviderResponse
 from llm_change_tool.providers.openai import OpenAIProvider
 
 
@@ -84,3 +84,67 @@ def test_sdk_status_is_sanitized_and_retryable(monkeypatch, status, retry):
     assert str(error.value) == f"http_{status}"
     assert error.value.retryable is retry
     assert len(calls) == 1
+
+
+def test_reused_client_and_truncation_keep_known_usage(monkeypatch):
+    created = []
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "synthetic-request"},
+            json={
+                "id": "synthetic",
+                "object": "chat.completion",
+                "created": 0,
+                "model": config().model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "{"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            },
+        )
+
+    def client(**kwargs):
+        created.append(True)
+        return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+    monkeypatch.setattr("llm_change_tool.providers.openai.OpenAI", client)
+    provider = OpenAIProvider("synthetic-only")
+    try:
+        for _ in range(2):
+            with pytest.raises(ProviderFailure, match="response_truncated") as failure:
+                provider.predict([Image.new("RGB", (32, 32))] * 2, "guide", config())
+            assert failure.value.response.output_tokens == 20
+            assert failure.value.response.request_id == "synthetic-request"
+        assert len(created) == 1
+    finally:
+        provider.close()
+    assert provider.client is None
+
+
+def test_failed_response_is_charged_when_usage_is_known(imported):
+    from llm_change_tool.core.jobs import create_job, run_job
+    from llm_change_tool.core.plans import create_plan
+    from llm_change_tool.storage.store import rows, transaction
+
+    class Truncated:
+        def predict(self, images, prompt, config):
+            raise ProviderFailure(
+                "response_truncated", response=ProviderResponse("{", 10, 20, "request", "length")
+            )
+
+    project, _ = imported
+    cfg = config()
+    job = create_job(project, create_plan(project), cfg)
+    result = run_job(project, job, provider=Truncated())
+    assert result["counts"]["FAILED"] == 6
+    assert result["usage"]["cost"] == pytest.approx(6 * 50 / 1_000_000)
+    assert result["usage"]["reserved"] == 0
+    with transaction(project, readonly=True) as con:
+        assert all(row["state"] == "FAILED" for row in rows(con, "SELECT state FROM attempts"))
+    assert all(row["finish_reason"] == "length" for row in result["diagnostics"])

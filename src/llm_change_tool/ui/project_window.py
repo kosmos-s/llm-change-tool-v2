@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from llm_change_tool.core.projects import Project, backup_project, create_project, open_project
 from llm_change_tool.ui.components import card, role
 from llm_change_tool.ui.components import text_label as label
+from llm_change_tool.ui.feedback import explain_error
 from llm_change_tool.ui.theme import apply_theme
 
 
@@ -128,7 +129,7 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
 
     def _error(self, exc: Exception):
-        QMessageBox.warning(self, "작업을 완료하지 못했습니다", str(exc))
+        QMessageBox.warning(self, "작업을 완료하지 못했습니다", explain_error(str(exc)))
 
     def _new_project(self):
         parent = QFileDialog.getExistingDirectory(self, "새 작업 폴더를 만들 로컬 위치 선택")

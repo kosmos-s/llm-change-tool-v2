@@ -142,6 +142,31 @@ def append_review(
     current = latest["revision"] if latest else None
     if current != expected_revision:
         raise ValueError("Review changed since loading. Reload before saving.")
+    if not isinstance(elapsed_seconds, (int, float)) or not 0 <= elapsed_seconds <= 86400:
+        raise ValueError("Invalid review duration")
+    if (
+        origin == "local"
+        and latest
+        and all(
+            (
+                latest["state"] == state,
+                latest["labels"] == canonical(labels),
+                latest["reason"] == reason,
+                latest["reason_en"] == reason_en,
+                latest["reviewer"] == reviewer.strip(),
+                latest["result_hash"] == comparison["result_hash"],
+            )
+        )
+    ):
+        if elapsed_seconds:
+            execute(
+                con,
+                """INSERT INTO review_effort VALUES (:rev,:seconds)
+                ON CONFLICT(revision) DO UPDATE SET seconds=seconds+excluded.seconds""",
+                rev=current,
+                seconds=elapsed_seconds,
+            )
+        return current
     result = execute(
         con,
         """INSERT INTO reviews(sample_id,run_id,state,labels,reason,reviewer,
@@ -160,8 +185,6 @@ def append_review(
         english=reason_en,
     )
     revision = result.lastrowid
-    if not isinstance(elapsed_seconds, (int, float)) or not 0 <= elapsed_seconds <= 86400:
-        raise ValueError("Invalid review duration")
     if elapsed_seconds:
         execute(
             con,
@@ -284,39 +307,30 @@ def undo_review(project, run_id, sample_id, reviewer, expected_revision=None):
 
 
 def review_queue(project, run_id, filter_name="all"):
-    with transaction(project) as con:
+    condition = {
+        "unreviewed": "WHERE coalesce(v.result_hash=c.result_hash,0)=0 OR coalesce(v.state,'') NOT IN ('DONE','DEFERRED')",
+        "deferred": "WHERE v.state='DEFERRED'",
+        "required": "WHERE c.required=1 AND (coalesce(v.state,'')!='DONE' OR coalesce(v.result_hash=c.result_hash,0)=0)",
+    }.get(filter_name, "")
+    with transaction(project, readonly=True) as con:
         result = rows(
             con,
-            """SELECT s.*,c.required,c.signals,c.result_hash,r.prediction,
+            f"""SELECT s.*,c.required,c.signals,c.result_hash,r.prediction,
             v.state review_state,v.revision,v.labels reviewed_labels,v.reason reviewed_reason,v.reason_en reviewed_reason_en,v.reviewer,
             coalesce(v.result_hash=c.result_hash,0) review_current
             FROM samples s JOIN comparisons c ON c.sample_id=s.id AND c.run_id=:run
             LEFT JOIN llm_results r ON r.sample_id=s.id AND r.run_id=:run
             LEFT JOIN reviews v ON v.revision=(SELECT max(revision) FROM reviews
                 WHERE run_id=:run AND sample_id=s.id)
-            ORDER BY s.logical_key""",
+            {condition} ORDER BY s.logical_key""",
             run=run_id,
         )
-    if filter_name == "unreviewed":
-        return [
-            s
-            for s in result
-            if not s["review_current"] or s["review_state"] not in ("DONE", "DEFERRED")
-        ]
-    if filter_name == "deferred":
-        return [s for s in result if s["review_state"] == "DEFERRED"]
-    if filter_name == "required":
-        return [
-            s
-            for s in result
-            if s["required"] and (s["review_state"] != "DONE" or not s["review_current"])
-        ]
     return result
 
 
 def review_summary(project, run_id):
     """Count the whole run, independently of the visible review filter."""
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         return one(
             con,
             """SELECT count(*) total,
@@ -331,7 +345,7 @@ def review_summary(project, run_id):
 
 
 def review_history(project, run_id, sample_id):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         return rows(
             con,
             "SELECT * FROM reviews WHERE run_id=:run AND sample_id=:sid ORDER BY revision",

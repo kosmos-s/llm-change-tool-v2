@@ -29,7 +29,7 @@ def prepare_candidates(project):
         raise ValueError(
             f"Source integrity errors: {len(errors)}; original data or records changed"
         )
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
         content = {

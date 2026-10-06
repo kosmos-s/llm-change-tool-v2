@@ -12,7 +12,13 @@ def classify_failure(exc=None, *, code=None, phase="provider"):
         return "configuration", code, False, True
     if code in ("interrupted_unknown_outcome", "missing_token_usage"):
         return "unknown_outcome", code, False, False
-    if code in ("malformed_output", "refused_or_truncated"):
+    if code in (
+        "malformed_output",
+        "refused_or_truncated",
+        "response_refused",
+        "response_truncated",
+        "empty_response",
+    ):
         return "ai_response", code, True, False
     if (
         (isinstance(exc, ProviderFailure) and exc.retryable)

@@ -8,10 +8,12 @@ from llm_change_tool.storage.schema_v2 import SQL
 from llm_change_tool.storage.schema_v3 import SQL as SQL_V3
 from llm_change_tool.storage.schema_v4 import SQL as SQL_V4
 from llm_change_tool.storage.schema_v5 import SQL as SQL_V5
+from llm_change_tool.storage.schema_v6 import SQL as SQL_V6
 
 APPLICATION_ID = 0x4C435432  # LCT2
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MIGRATIONS = {
+    6: SQL_V6,
     5: SQL_V5,
     4: SQL_V4,
     3: SQL_V3,

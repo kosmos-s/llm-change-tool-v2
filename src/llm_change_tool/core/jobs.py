@@ -119,7 +119,7 @@ def validate_run(con, run):
 
 
 def job_info(project, job_id):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
         job["counts"] = {
             r["state"]: r["n"]
@@ -159,7 +159,27 @@ def job_info(project, job_id):
         WHERE f.job_id=:id AND i.state='FAILED' GROUP BY f.domain""",
             id=job_id,
         )
+        job["diagnostics"] = rows(
+            con,
+            """SELECT a.sample_id,a.state,d.request_id,d.finish_reason,d.image_seconds,d.provider_seconds
+            FROM attempts a JOIN attempt_diagnostics d ON d.attempt_id=a.id
+            WHERE a.job_id=:id ORDER BY a.created_at DESC LIMIT 20""",
+            id=job_id,
+        )
         return job
+
+
+def attempt_diagnostics(con, aid, response, image_seconds, provider_seconds):
+    execute(
+        con,
+        """INSERT OR REPLACE INTO attempt_diagnostics
+        VALUES (:id,:request,:reason,:images,:provider)""",
+        id=aid,
+        request=getattr(response, "request_id", None),
+        reason=getattr(response, "finish_reason", None),
+        images=image_seconds,
+        provider=provider_seconds,
+    )
 
 
 def budget_limit(con, job_id, initial_limit):
@@ -333,6 +353,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
         errors = verify_sources(project, mode, candidate_policy=candidate_policy)
         if errors:
             raise ValueError(f"Source integrity/quality errors: {len(errors)}")
+        owns_provider = provider is None
         provider = provider or (
             MockProvider() if config.provider == "mock" else OpenAIProvider(api_key)
         )
@@ -400,10 +421,15 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                     )
                 response = None
                 phase = "images"
+                image_seconds = provider_seconds = 0.0
+                started = time.perf_counter()
                 try:
                     images = sample_images(project, sample)
+                    image_seconds = time.perf_counter() - started
                     phase = "provider"
+                    started = time.perf_counter()
                     response = provider.predict(images, run["prompt"], config)
+                    provider_seconds = time.perf_counter() - started
                     phase = "response"
                     prediction = Prediction.model_validate_json(response.raw)
                     cost = (
@@ -416,6 +442,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                         / 1_000_000
                     )
                     with transaction(project) as con:
+                        attempt_diagnostics(con, aid, response, image_seconds, provider_seconds)
                         execute(
                             con,
                             "UPDATE attempts SET state='COMPLETED',charged_cost=:cost,input_tokens=:it,output_tokens=:ot WHERE id=:id",
@@ -446,6 +473,11 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                                 id=job_id,
                             )
                 except Exception as exc:
+                    response = response or getattr(exc, "response", None)
+                    if phase == "images":
+                        image_seconds = time.perf_counter() - started
+                    elif phase == "provider":
+                        provider_seconds = time.perf_counter() - started
                     retry = (
                         isinstance(exc, ProviderFailure)
                         and exc.retryable
@@ -461,6 +493,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                     )
                     retry = retry and domain == "transient"
                     with transaction(project) as con:
+                        attempt_diagnostics(con, aid, response, image_seconds, provider_seconds)
                         # Unknown remote outcomes reserve full estimated cost; never erase on retry.
                         if response:
                             cost = (
@@ -526,4 +559,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                     id=job_id,
                 )
             raise
+        finally:
+            if owns_provider and hasattr(provider, "close"):
+                provider.close()
     return job_info(project, job_id)

@@ -236,7 +236,7 @@ def new_golden(window):
 def golden_action(window, action):
     if not window.project:
         return
-    with transaction(window.project) as con:
+    with transaction(window.project, readonly=True) as con:
         sets = rows(
             con,
             "SELECT g.*,m.purpose,m.split FROM golden_sets g LEFT JOIN golden_metadata m ON m.set_id=g.id ORDER BY g.created_at",

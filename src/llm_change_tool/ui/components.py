@@ -211,7 +211,10 @@ class ResultPanel(QFrame):
         self.output_path = None
         if isinstance(value, dict):
             if "error" in value:
-                summary, level = "작업을 완료하지 못했습니다.\n" + str(value["error"]), "error"
+                summary, level = (
+                    "작업을 완료하지 못했습니다.\n" + explain_error(value["error"]),
+                    "error",
+                )
             elif "inventory" in value and "selected_count" in value:
                 inventory = value["inventory"]
                 summary = f"고유 후보 점검 · 선정 {value['selected_count']:,}건 / 선정 가능 {inventory['eligible_count']:,}건"
@@ -231,15 +234,15 @@ class ResultPanel(QFrame):
                     rows.append(
                         (
                             split,
-                            f"등록 {stat['registered']} → 고유 {stat['unique']} → 보류 {stat['held_unique']} → 가능 {stat['eligible']} · 제외 {stat['rejected']} · 목표 {stat['target']} · 부족 {stat['shortage']}",
+                            f"등록 {stat['registered']} → 고유 {stat['unique']} → 보류 {stat['held_unique']} → 가능 {stat['eligible']} · 제외 {stat['rejected']} · 목표 {stat['target'] if stat['target'] is not None else '시험용: 해당 없음'} · 부족 {stat['shortage'] if stat['shortage'] is not None else '해당 없음'}",
                         )
                     )
                     rows += [
-                        (f"{split} 보류 이유", f"{reason}: {n}")
+                        (f"{split} 보류 이유", f"{explain_error(reason)}: {n}")
                         for reason, n in stat["reason_counts"].items()
                     ]
                 rows += [
-                    ("제외·비연결 파일", f"{r.get('path')}: {r.get('error')}")
+                    ("제외·비연결 파일", f"{r.get('path')}: {explain_error(r.get('error'))}")
                     for r in inventory["rejected"]
                 ]
             elif "passed" in value:
@@ -261,7 +264,7 @@ class ResultPanel(QFrame):
                 for problem in value.get("problems", []):
                     parts = str(problem).rsplit(": ", 1)
                     key, detail = parts if len(parts) == 2 else ("작업 상태", parts[0])
-                    rows.append((key, reasons.get(detail, detail)))
+                    rows.append((key, reasons.get(detail, explain_error(detail))))
                 rows += [(FIELDS.get(k, k), str(v)) for k, v in value.get("counts", {}).items()]
             elif "counts" in value and "state" in value:
                 counts = value["counts"]
@@ -323,7 +326,10 @@ class ResultPanel(QFrame):
                 count = len(value["errors"])
                 summary = f"데이터 {value['samples']:,}건 확인 · 품질 확인 사항 {count:,}건"
                 level = "warning" if count else "success"
-                rows = [(e.get("path", "데이터"), e.get("error", "")) for e in value["errors"]]
+                rows = [
+                    (e.get("path", "데이터"), explain_error(e.get("error", "")))
+                    for e in value["errors"]
+                ]
                 if not count:
                     summary += "\n이제 AI 작업을 만들고 분석을 시작하세요."
             elif "ready" in value and "split_counts" in value:
@@ -450,6 +456,11 @@ class DashboardPanel(QWidget):
             content.addWidget(val)
             grid.addWidget(frame, index // 4, index % 4)
         layout.addLayout(grid)
+        self.overall = text_label("종합 F1 · 아직 평가하지 않았습니다.", "reviewSummary")
+        self.overall.setToolTip(
+            "인공물·나무·산림·농경지·수계의 정탐·오탐·미탐을 합산합니다. 세부 라벨과 고정 0 라벨은 종합 점수에서 제외합니다."
+        )
+        layout.addWidget(self.overall)
         self.metric_table = table(["평가 대상 / 라벨", "Precision", "Recall", "F1", "F2"])
         self.metric_table.setMinimumHeight(300)
         self.metric_table.hide()
@@ -460,6 +471,7 @@ class DashboardPanel(QWidget):
     def reset(self):
         for val in self.metrics.values():
             val.setText("—")
+        self.overall.setText("종합 F1 · 아직 평가하지 않았습니다.")
         self.metric_table.setRowCount(0)
         self.metric_table.hide()
         self.result.reset()
@@ -482,14 +494,39 @@ class DashboardPanel(QWidget):
             reports = [{"name": "AI · 사람", **value["VLM_vs_human"]}]
         elif isinstance(value, dict) and "metrics" in value:
             reports = [value]
-        cells = []
+        from llm_change_tool.core.metrics import overall_metrics
+
+        cells, summaries = [], []
         for report in reports:
             name = report.get("name", report.get("model", "평가"))
+            overall = report.get("overall") or overall_metrics(report.get("metrics", {}))
+            matched, reference = report.get("matched", 0), report.get("reference", 0)
+            scope = f"평가 {matched}/{reference}건"
+            if report.get("partial_review"):
+                scope = f"부분 평가 {matched}건 · 선택 작업 {report['selected_total']}건 중 검수 완료 항목"
+            elif matched != reference:
+                scope += " · 예측 누락 있음: 전체 평가 아님"
+            if overall:
+                scores = [f"{overall[k]:.1%}" for k in ("precision", "recall", "f1", "f2")]
+                if not overall["defined"]:
+                    scores = ["—"] * 4
+                cells.append([f"{name} · 종합 (주요 5개 라벨·micro)", *scores])
+                summaries.append(
+                    f"{name} · 종합 F1 {scores[2]} · {scope}"
+                    + (
+                        " · 변화 양성·오탐·미탐이 없어 F1을 정의할 수 없음"
+                        if not overall["defined"]
+                        else ""
+                    )
+                )
+            else:
+                summaries.append(f"{name} · 종합 F1 — · {scope} · 평가할 정답과 예측이 필요합니다.")
             for key, scores in report.get("metrics", {}).items():
                 cells.append(
                     [f"{name} · {titles.get(key, key)}"]
                     + [f"{scores[k]:.1%}" for k in ("precision", "recall", "f1", "f2")]
                 )
+        self.overall.setText("\n".join(summaries) or "종합 F1 · 아직 평가하지 않았습니다.")
         self.metric_table.setRowCount(len(cells))
         for r, row in enumerate(cells):
             for c, cell in enumerate(row):

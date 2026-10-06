@@ -54,6 +54,7 @@ from llm_change_tool.ui.components import (
     text_label,
     tone,
 )
+from llm_change_tool.ui.feedback import explain_error
 from llm_change_tool.ui.project_window import MainWindow as ProjectWindow
 from llm_change_tool.ui.reviewer import ReviewWidget
 from llm_change_tool.ui.tasks import Task
@@ -113,18 +114,23 @@ class MainWindow(ProjectWindow):
         nav.addWidget(text_label("LLM Change\nTool v2", "brand"))
         nav.addWidget(text_label("항공영상 변화탐지 검수"))
         nav.addSpacing(32)
-        nav.addWidget(text_label("WORKSPACE", "navSection"))
+        nav.addWidget(text_label("기본 작업", "navSection"))
         self.nav_buttons = []
         for index, (title, _) in enumerate(PAGES):
             if index == 4:
                 nav.addSpacing(22)
-                nav.addWidget(text_label("협업 · 분석", "navSection"))
+                self.advanced_nav = QPushButton("＋ 평가 · 고급 기능")
+                self.advanced_nav.setCheckable(True)
+                self.advanced_nav.toggled.connect(self.toggle_advanced)
+                nav.addWidget(self.advanced_nav)
             prefix = f"{index:02d}  " if index < 4 else "＋  "
             button = role(QPushButton(prefix + title), "nav")
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, i=index: self.navigate(i))
             nav.addWidget(button)
             self.nav_buttons.append(button)
+            if index >= 4:
+                button.setVisible(False)
         nav.addStretch()
         nav.addWidget(text_label(f"LOCAL FIRST · {__version__}", "navSection"))
         nav.addWidget(text_label("작업은 내 PC에 저장됩니다.\n원본 파일은 그대로 유지합니다."))
@@ -165,10 +171,17 @@ class MainWindow(ProjectWindow):
         self.update_navigation(0)
 
     def navigate(self, index):
+        if index >= 4:
+            self.advanced_nav.setChecked(True)
         if self.tabs.isTabEnabled(index):
             self.tabs.setCurrentIndex(index)
             self.nav_buttons[index].setFocus(Qt.FocusReason.OtherFocusReason)
         self.update_navigation(self.tabs.currentIndex())
+
+    def toggle_advanced(self, visible):
+        self.advanced_nav.setText(("－ " if visible else "＋ ") + "평가 · 고급 기능")
+        for button in self.nav_buttons[4:]:
+            button.setVisible(visible)
 
     def update_navigation(self, index):
         if not hasattr(self, "nav_buttons"):
@@ -627,6 +640,10 @@ class MainWindow(ProjectWindow):
         self.tabs.addTab(scroll_page(page), "품질 · Export")
 
     def set_project(self, project):
+        if hasattr(self, "review_widget") and not self.review_widget.flush(
+            on_saved=lambda: self.set_project(project)
+        ):
+            return
         if hasattr(self, "review_widget") and not self.review_widget.bind(None, None):
             return
         super().set_project(project)
@@ -648,7 +665,9 @@ class MainWindow(ProjectWindow):
             return self._error(ValueError("프로젝트를 먼저 여세요."))
         if self.process is not None or (self.active_task and self.active_task.isRunning()):
             return
-        if not self.review_widget.flush():
+        if not self.review_widget.flush(
+            on_saved=lambda: self.background(function, after, require_project=require_project)
+        ):
             return
         if self.active_task:
             self.active_task.deleteLater()
@@ -731,7 +750,7 @@ class MainWindow(ProjectWindow):
                 after(value)
             except Exception as exc:
                 self.task_error = True
-                self.activity.setText("결과를 표시하지 못했습니다: " + str(exc))
+                self.activity.setText("결과를 표시하지 못했습니다: " + explain_error(str(exc)))
         if self.task_page == 0 and self.task_error:
             self.result.setText(self.log.summary.text())
         if self.task_error:
@@ -748,6 +767,7 @@ class MainWindow(ProjectWindow):
         self._set_busy(False)
         self.jobs.setEnabled(True)
         # QThread.finished is delivered after isRunning() becomes false.
+        self.refresh_jobs(rebind=False)
         self.refresh_actions()
 
     def choose_import(self):
@@ -792,10 +812,10 @@ class MainWindow(ProjectWindow):
         except Exception as exc:
             self._error(exc)
 
-    def refresh_jobs(self, select=None):
+    def refresh_jobs(self, select=None, *, rebind=True):
         if not self.project:
             return
-        with transaction(self.project) as con:
+        with transaction(self.project, readonly=True) as con:
             jobs = rows(
                 con,
                 """SELECT j.*,r.created_at,r.config,p.mode,
@@ -825,15 +845,29 @@ class MainWindow(ProjectWindow):
         index = self.jobs.findData(current)
         self.jobs.setCurrentIndex(index if index >= 0 else 0 if jobs else -1)
         self.jobs.blockSignals(False)
-        self.select_job()
+        if rebind or self.jobs.currentData() != self.job_id:
+            self.select_job()
         self.refresh_actions()
 
     def select_job(self, *args):
         if not self.project:
             return
         candidate = self.jobs.currentData()
+        if self.review_widget.dirty:
+
+            def resume_selection():
+                self.jobs.blockSignals(True)
+                self.jobs.setCurrentIndex(self.jobs.findData(candidate))
+                self.jobs.blockSignals(False)
+                self.select_job()
+
+            self.jobs.blockSignals(True)
+            self.jobs.setCurrentIndex(self.jobs.findData(self.job_id))
+            self.jobs.blockSignals(False)
+            self.review_widget.flush(on_saved=resume_selection)
+            return
         if candidate:
-            with transaction(self.project) as con:
+            with transaction(self.project, readonly=True) as con:
                 selected = one(
                     con,
                     """SELECT r.id AS run_id,r.config,r.prompt,p.mode,
@@ -881,7 +915,7 @@ class MainWindow(ProjectWindow):
     def start_job(self):
         if not self.job_id:
             return
-        with transaction(self.project) as con:
+        with transaction(self.project, readonly=True) as con:
             run = one(con, "SELECT config FROM llm_runs WHERE id=:id", id=self.run_id)
         if json.loads(run["config"])["provider"] == "openai":
             self.api_settings.show()
@@ -973,7 +1007,7 @@ class MainWindow(ProjectWindow):
         if self.review_widget.task and self.review_widget.task.isRunning():
             event.ignore()
             return
-        if not self.review_widget.flush():
+        if not self.review_widget.flush(on_saved=self.close):
             event.ignore()
             return
         super().closeEvent(event)

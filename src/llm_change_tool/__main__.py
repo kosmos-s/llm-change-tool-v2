@@ -2,6 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from llm_change_tool.ui.feedback import explain_error
+
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -29,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = self_test()
             code = 0
         except Exception as exc:
-            result = {"passed": False, "error": str(exc)}
+            result = {"passed": False, "error": explain_error(str(exc))}
             code = 1
         if args.report:
             args.report.write_text(json.dumps(result), encoding="utf-8")
@@ -49,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             window.set_project(open_project(args.project))
         except Exception as exc:
-            QMessageBox.warning(window, "프로젝트를 열 수 없습니다", str(exc))
+            QMessageBox.warning(window, "프로젝트를 열 수 없습니다", explain_error(str(exc)))
     window.show()
     return app.exec()
 

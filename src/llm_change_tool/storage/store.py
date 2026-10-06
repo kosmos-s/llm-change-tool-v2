@@ -1,6 +1,7 @@
-"""SQLAlchemy Core unit of work; one engine/connection per operation."""
+"""Project engines are reused; connections and transactions remain operation-local."""
 
 from contextlib import contextmanager
+from functools import lru_cache
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
@@ -9,30 +10,32 @@ from sqlalchemy.pool import NullPool
 from llm_change_tool.core.projects import Project
 
 
-@contextmanager
-def transaction(project: Project):
-    if not project.database.is_file():
-        raise FileNotFoundError(project.database)
-    engine = create_engine(
-        URL.create("sqlite+pysqlite", database=str(project.database)), poolclass=NullPool
-    )
+@lru_cache(maxsize=16)
+def _engine(database):
+    engine = create_engine(URL.create("sqlite+pysqlite", database=database), poolclass=NullPool)
 
     @event.listens_for(engine, "connect")
     def configure(connection, record):
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=5000")
 
-    try:
-        with engine.connect() as con:
-            con.exec_driver_sql("BEGIN IMMEDIATE")
-            try:
-                yield con
-                con.commit()
-            except Exception:
-                con.rollback()
-                raise
-    finally:
-        engine.dispose()
+    return engine
+
+
+@contextmanager
+def transaction(project: Project, *, readonly=False):
+    if not project.database.is_file():
+        raise FileNotFoundError(project.database)
+    with _engine(str(project.database.resolve())).connect() as con:
+        if readonly:
+            con.exec_driver_sql("PRAGMA query_only=ON")
+        con.exec_driver_sql("BEGIN" if readonly else "BEGIN IMMEDIATE")
+        try:
+            yield con
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
 
 
 def execute(con, sql, **values):
