@@ -11,23 +11,27 @@ from llm_change_tool.core.datasets import (
     safe_path,
     scan_dataset,
     sha,
-    verify_sources,
+    source_identities,
 )
 from llm_change_tool.core.jobs import validate_run
 from llm_change_tool.core.labels import canonical, digest, effective_doc, import_labels, strict_json
 from llm_change_tool.core.locking import worker_lock
+from llm_change_tool.core.plans import plan_uses_candidates
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.reviews import latest_review, result_binding
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
 def image_identity(sample):
+    if sample.get("content_hash"):
+        return sample["content_hash"]
     hashes = json.loads(sample["hashes"])
     return digest([hashes.get("t1"), hashes.get("t2")]) if "t1" in hashes else hashes["combined"]
 
 
 def quality_report(project, run_id=None, mode="pilot"):
-    with transaction(project) as con:
+    identities = source_identities(project)
+    with transaction(project, readonly=True) as con:
         dataset = one(con, "SELECT * FROM datasets")
         samples = rows(con, "SELECT * FROM samples ORDER BY logical_key")
         excluded = (
@@ -42,6 +46,7 @@ def quality_report(project, run_id=None, mode="pilot"):
         )
         by_path, groups = {}, defaultdict(list)
         for sample in samples:
+            sample["content_hash"] = identities[sample["id"]]
             review = latest_review(con, run_id, sample["id"]) if run_id else None
             sample["final_labels"] = json.loads(review["labels"]) if review else None
             sample["review_state"] = review["state"] if review else None
@@ -50,11 +55,26 @@ def quality_report(project, run_id=None, mode="pilot"):
             by_path[json.loads(sample["paths"])["json"]] = sample
             groups[image_identity(sample)].append(sample)
         issues = quality_issues(json.loads(dataset["quality"]), mode)
+        candidate_policy = bool(
+            run_id
+            and plan_uses_candidates(
+                con, one(con, "SELECT plan_id FROM llm_runs WHERE id=:id", id=run_id)["plan_id"]
+            )
+        )
         for issue in issues:
             sample = by_path.get(issue.get("path"))
+            managed = candidate_policy and (
+                sample is None
+                or issue["error"]
+                in ("split_leakage", "duplicate_image", "source_labels", "orphan_image")
+            )
+            if managed:
+                issue["severity"] = "WARNING"
             issue["sample_id"] = sample["id"] if sample else None
             issue["status"] = (
-                "원본 문제"
+                "후보 정책에서 보류·제외 또는 필수 검수로 관리"
+                if managed
+                else "원본 문제"
                 if not sample
                 else (
                     "준비 제외 예정"
@@ -136,10 +156,13 @@ def set_exclusion(project, run_id, sample_id, reason=None):
 
 def preparation_preview(project, run_id):
     """Resolve final labels without weakening the normal export gate."""
-    fatal = verify_sources(project, "pilot")
+    from llm_change_tool.core.exporting import verify_run_sources
+
+    fatal = verify_run_sources(project, run_id)
     if fatal:
         raise ValueError("파일 무결성/파싱 오류를 먼저 해결하세요: " + str(fatal[:3]))
-    with transaction(project) as con:
+    identity_map = source_identities(project)
+    with transaction(project, readonly=True) as con:
         run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
         validate_run(con, run)
         job = one(con, "SELECT * FROM jobs WHERE run_id=:run", run=run_id)
@@ -199,7 +222,7 @@ def preparation_preview(project, run_id):
             except ValueError as exc:
                 problems.append(name + ": " + str(exc))
                 continue
-            identity = image_identity(sample)
+            identity = identity_map[sample["id"]]
             if identity in identities:
                 problems.append(name + ": 중복 그룹에서 대표 항목 외에는 명시적으로 제외하세요.")
             identities.add(identity)

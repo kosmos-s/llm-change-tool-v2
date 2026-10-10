@@ -25,6 +25,7 @@ from llm_change_tool.core.quality import (
     set_exclusion,
 )
 from llm_change_tool.ui.components import ResultPanel, scroll_page, text_label
+from llm_change_tool.ui.feedback import explain_error
 
 ISSUE_TITLES = {
     "split_leakage": "split 간 동일 이미지",
@@ -161,7 +162,7 @@ class QualityPage(QWidget):
             self.kind.clear()
             self.kind.addItem("모든 유형", "all")
             for key in sorted({i["error"] for i in report["issues"]}):
-                self.kind.addItem(ISSUE_TITLES.get(key, key), key)
+                self.kind.addItem(ISSUE_TITLES.get(key, explain_error(key)), key)
             self.kind.blockSignals(False)
             self.render_issues()
             self.fill(
@@ -223,7 +224,7 @@ class QualityPage(QWidget):
                     i["sample_id"],
                     [
                         "차단" if i["severity"] == "FATAL" else "경고",
-                        ISSUE_TITLES.get(i["error"], i["error"]),
+                        ISSUE_TITLES.get(i["error"], explain_error(i["error"])),
                         i.get("path", ""),
                         i["status"],
                         i.get("other") or str(i.get("details", "")),

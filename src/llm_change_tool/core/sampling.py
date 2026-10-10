@@ -9,15 +9,20 @@ from llm_change_tool.core.labels import digest
 def stratum(sample):
     labels = json.loads(sample["original_labels"])
     signature = ",".join(k for k, v in sorted(labels.items()) if v == 1) or "negative"
-    return sample["error_type"] + ":" + signature
+    if any(v is None for v in labels.values()):
+        signature += ",unknown"
+    errors = ",".join(sample.get("selection_error_types", [])) or sample["error_type"]
+    return errors + ":" + signature
 
 
 def pilot_stratum(sample):
-    return "/".join((sample["source"], sample["split"], stratum(sample)))
+    return "/".join(
+        (sample.get("selection_source", sample["source"]), sample["split"], stratum(sample))
+    )
 
 
 def source_stratum(sample):
-    return "/".join((sample["source"], stratum(sample)))
+    return "/".join((sample.get("selection_source", sample["source"]), stratum(sample)))
 
 
 def _balanced_sample(samples, count, seed, group_key):
@@ -49,7 +54,46 @@ def balanced_pilot_sample(samples, count, seed):
 
 
 def balanced_source_sample(samples, count, seed):
-    return _balanced_sample(samples, count, seed, source_stratum)
+    if not 0 <= count <= len(samples):
+        raise ValueError("Invalid sample count")
+    groups = defaultdict(list)
+    for sample in samples:
+        groups[sample.get("selection_source", sample["source"])].append(sample)
+    ordered = [
+        _balanced_sample(groups[k], len(groups[k]), seed, stratum)
+        for k in sorted(groups, key=lambda k: digest([str(seed), k]))
+    ]
+    return _interleave(ordered, count)
+
+
+def _interleave(groups, count):
+    result, offset = [], 0
+    while len(result) < count:
+        for group in groups:
+            if offset < len(group):
+                result.append(group[offset])
+                if len(result) == count:
+                    break
+        offset += 1
+    return result
+
+
+def balanced_unique_pilot_sample(samples, count, seed):
+    """Source first, split second, then label/error strata; capacity-aware."""
+    if not 0 <= count <= len(samples):
+        raise ValueError("Invalid sample count")
+    sources = defaultdict(lambda: defaultdict(list))
+    for sample in samples:
+        sources[sample.get("selection_source", sample["source"])][sample["split"]].append(sample)
+    ordered = []
+    for source in sorted(sources, key=lambda k: digest([str(seed), k])):
+        splits = sources[source]
+        children = [
+            _balanced_sample(splits[k], len(splits[k]), seed, stratum)
+            for k in sorted(splits, key=lambda k: digest([str(seed), k]))
+        ]
+        ordered.append(_interleave(children, sum(map(len, children))))
+    return _interleave(ordered, count)
 
 
 def distribution(samples, *, include_source=False):

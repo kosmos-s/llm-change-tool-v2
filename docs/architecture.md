@@ -49,3 +49,16 @@ Review는 DONE/DEFERRED/DRAFT입니다. 자동 저장은 DRAFT이며 완료를 �
 Final Gate는 plan·config·source SHA256, AI 성공/오류, Compare 및 review-list 누락, 필수 검수, deferred/draft, 유효 JSON, 팀 충돌을 검사합니다. 검수 불필요 항목만 AUTO_KEEP 원본 fallback이 허용됩니다. 필수 검수를 원본 fallback으로 숨기지 않습니다.
 
 Export는 원본과 분리된 `.incomplete-UUID` 준비 폴더에 JSON/JPG/manifest를 모두 쓴 뒤 최종 폴더명으로 바꿉니다. 처리 오류가 나면 준비 폴더를 제거합니다. OS 강제 종료로 남은 `.incomplete-*` 폴더는 완료 산출물이 아닙니다. JSON의 모르는 필드도 유지합니다. 복사한 이미지 해시를 다시 확인합니다. Mock은 pilot 결과만 만들며 production은 정확한 3,000건과 OpenAI coverage를 요구합니다.
+
+
+## 0.1.10: 읽기/쓰기와 평가
+
+- SQLAlchemy 엔진은 프로젝트 경로별 최대 16개를 재사용합니다. NullPool 연결은 작업마다 새로 열고 닫으므로 스레드 사이에 연결을 공유하지 않습니다.
+- 읽기 전용 조회는 BEGIN과 query_only를 사용합니다. 쓰기는 BEGIN IMMEDIATE로 충돌 확인과 이력 추가를 원자적으로 처리합니다. WAL은 자동으로 켜지 않습니다.
+- 검수 버튼·자동 초안 저장의 DB 처리는 QThread에서 실행하고 결과만 UI로 전달합니다. 저장 중 중복 입력과 이동을 막고 성공 후 이동합니다. 직접 호출하는 동기 save는 내부 작업·검증용으로 유지합니다.
+- 검수 이미지 캐시는 프로젝트·샘플·원본 경로·파일 크기·수정 시각에 연결하며 최대 3항목/64MiB입니다. 차이 영상은 필요할 때 백그라운드로 생성합니다.
+- 파일 내보내기는 읽기 스냅샷 뒤 DB 잠금 밖에서 staging에 생성합니다. 원본 재검증과 짧은 쓰기 트랜잭션의 gate/검수 revision 재확인 후 게시합니다. 변경 또는 실패 시 미완성 폴더를 정리합니다.
+- Golden/품질/준비의 영상 동일성은 고유 후보와 같은 decoded RGB 기준입니다. 기존 계획에는 해당 계획의 원본 검증 규칙을 유지합니다.
+- 종합 F1은 schema의 parent/fixed가 없는 주요 5개 라벨의 confusion counts를 합산한 micro입니다. 라벨별 지표와 분리하며 coverage와 부분 검수 평가를 표시합니다. 전부 음성이어서 TP+FP+FN=0이면 종합 F1을 정의하지 않습니다.
+- schema v6은 attempt_diagnostics만 추가합니다. 요청 ID, 종료 이유, 영상 준비/요청 시간이며 API Key나 요청 영상을 저장하지 않습니다. 확인된 사용량을 가진 잘림/거부 응답도 실패 비용에 기록합니다. 미확정 원격 결과의 예약액은 보존합니다.
+- 기본 prompt v6은 새 작업에만 적용합니다. 저장된 작업의 모델·프롬프트·스키마 hash는 바꾸지 않습니다.

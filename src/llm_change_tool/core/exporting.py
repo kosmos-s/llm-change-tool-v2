@@ -10,13 +10,14 @@ from llm_change_tool.core.jobs import validate_run
 from llm_change_tool.core.labels import (
     Prediction,
     canonical,
+    digest,
     effective_doc,
     import_labels,
     strict_json,
     validate_labels,
 )
 from llm_change_tool.core.locking import worker_lock
-from llm_change_tool.core.plans import validate_plan
+from llm_change_tool.core.plans import plan_uses_candidates, validate_plan
 from llm_change_tool.core.projects import now
 from llm_change_tool.core.reviews import latest_review, result_binding
 from llm_change_tool.storage.store import execute, one, rows, transaction
@@ -134,7 +135,7 @@ def gate_in_transaction(con, run_id):
 
 
 def run_mode(project, run_id):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         return one(
             con,
             """SELECT p.mode FROM work_plans p JOIN llm_runs r
@@ -144,9 +145,9 @@ def run_mode(project, run_id):
 
 
 def final_gate(project, run_id):
-    errors = verify_sources(project, run_mode(project, run_id))
+    errors = verify_run_sources(project, run_id)
     try:
-        with transaction(project) as con:
+        with transaction(project, readonly=True) as con:
             report, _, _, _ = gate_in_transaction(con, run_id)
     except ValueError as exc:
         report = {"passed": False, "problems": [str(exc)], "counts": {}}
@@ -157,10 +158,10 @@ def final_gate(project, run_id):
 
 def export_run(project, run_id, destination: Path | None = None):
     with worker_lock(project):
-        errors = verify_sources(project, run_mode(project, run_id))
+        errors = verify_run_sources(project, run_id)
         if errors:
             raise ValueError(f"Dataset quality/integrity errors: {len(errors)}")
-        with transaction(project) as con:
+        with transaction(project, readonly=True) as con:
             gate, effective, run, plan = gate_in_transaction(con, run_id)
             if not gate["passed"]:
                 raise ValueError("Final Gate blocked: " + "; ".join(gate["problems"][:8]))
@@ -172,65 +173,96 @@ def export_run(project, run_id, destination: Path | None = None):
             ).resolve()
             if destination.is_relative_to(source) or source.is_relative_to(destination):
                 raise ValueError("Export destination overlaps original dataset")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                raise FileExistsError(destination)
-            staging = destination.parent / f".incomplete-{sid}"
-            staging.mkdir(exist_ok=False)
-            try:
-                entries = []
-                for sample, review, doc in effective:
-                    paths = json.loads(sample["paths"])
-                    hashes = json.loads(sample["hashes"])
-                    file_hashes = {}
-                    for role, relative in paths.items():
-                        output = safe_path(staging, relative)
-                        output.parent.mkdir(parents=True, exist_ok=True)
-                        if role == "json":
-                            raw = (
-                                (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode(
-                                    "utf-8"
-                                )
-                                if doc
-                                else sample["original_raw"]
-                            )
-                            output.write_bytes(raw)
-                        else:
-                            shutil.copyfile(safe_path(source, relative), output)
-                            if sha(output) != hashes[role]:
-                                raise ValueError("Source image changed during export")
-                        file_hashes[relative] = sha(output)
-                    entries.append(
-                        {
-                            "sample_id": sample["id"],
-                            "logical_key": sample["logical_key"],
-                            "review_revision": review["revision"] if review else None,
-                            "english_reason_missing": bool(
-                                doc and doc.get("reason_ko") and not doc.get("reason")
-                            ),
-                            "files": file_hashes,
-                            "source_hashes": hashes,
-                        }
+            selections = rows(
+                con, "SELECT payload FROM plan_selections WHERE plan_id=:id", id=plan["id"]
+            )
+            uses_candidates = plan_uses_candidates(con, plan["id"])
+            frozen = digest(
+                [
+                    (sample["id"], review["revision"] if review else None, doc)
+                    for sample, review, doc in effective
+                ]
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise FileExistsError(destination)
+        staging = destination.parent / f".incomplete-{sid}"
+        staging.mkdir(exist_ok=False)
+        published = False
+        try:
+            entries = []
+            for sample, review, doc in effective:
+                paths = json.loads(sample["paths"])
+                hashes = json.loads(sample["hashes"])
+                file_hashes = {}
+                for role, relative in paths.items():
+                    output = safe_path(staging, relative)
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    if role == "json":
+                        raw = (
+                            (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                            if doc
+                            else sample["original_raw"]
+                        )
+                        output.write_bytes(raw)
+                    else:
+                        shutil.copyfile(safe_path(source, relative), output)
+                        if sha(output) != hashes[role]:
+                            raise ValueError("Source image changed during export")
+                    file_hashes[relative] = sha(output)
+                entries.append(
+                    {
+                        "sample_id": sample["id"],
+                        "logical_key": sample["logical_key"],
+                        "review_revision": review["revision"] if review else None,
+                        "english_reason_missing": bool(
+                            doc and doc.get("reason_ko") and not doc.get("reason")
+                        ),
+                        "files": file_hashes,
+                        "source_hashes": hashes,
+                    }
+                )
+            manifest = {
+                "format": "llm-change-export-v1",
+                "id": sid,
+                "mode": plan["mode"],
+                "production": plan["mode"] == "production",
+                "quality_issues": quality_issues(json.loads(dataset["quality"]), plan["mode"]),
+                "dataset_fingerprint": dataset["fingerprint"],
+                "plan_fingerprint": plan["fingerprint"],
+                "run_config_hash": run["config_hash"],
+                "prompt_sha256": run["prompt_hash"],
+                "schema_sha256": run["schema_hash"],
+                "timestamp": now(),
+                "gate": gate,
+                "samples": entries,
+            }
+            if selections:
+                manifest["selection"] = json.loads(selections[0]["payload"])
+            if uses_candidates:
+                manifest["quality_issues"] = manifest["selection"]["inventory"]["rejected"]
+                manifest["quality_scope"] = (
+                    "Excluded/held candidates are not exported; original integrity checks remain mandatory."
+                )
+            (staging / "manifest.json").write_text(canonical(manifest), encoding="utf-8")
+            if verify_run_sources(project, run_id):
+                raise ValueError("Source integrity errors during export")
+            with transaction(project) as con:
+                current_gate, current_effective, _, _ = gate_in_transaction(con, run_id)
+                current = digest(
+                    [
+                        (sample["id"], review["revision"] if review else None, doc)
+                        for sample, review, doc in current_effective
+                    ]
+                )
+                if not current_gate["passed"] or current != frozen:
+                    raise ValueError(
+                        "내보내기 중 검수 내용이 변경되었습니다. 최종 검증 후 다시 내보내세요."
                     )
-                manifest = {
-                    "format": "llm-change-export-v1",
-                    "id": sid,
-                    "mode": plan["mode"],
-                    "production": plan["mode"] == "production",
-                    "quality_issues": quality_issues(json.loads(dataset["quality"]), plan["mode"]),
-                    "dataset_fingerprint": dataset["fingerprint"],
-                    "plan_fingerprint": plan["fingerprint"],
-                    "run_config_hash": run["config_hash"],
-                    "prompt_sha256": run["prompt_hash"],
-                    "schema_sha256": run["schema_hash"],
-                    "timestamp": now(),
-                    "gate": gate,
-                    "samples": entries,
-                }
-                (staging / "manifest.json").write_text(canonical(manifest), encoding="utf-8")
                 if destination.exists():
                     raise FileExistsError(destination)
                 staging.rename(destination)
+                published = True
                 execute(
                     con,
                     "INSERT INTO snapshots VALUES (:id,:run,:manifest,:time)",
@@ -239,7 +271,16 @@ def export_run(project, run_id, destination: Path | None = None):
                     manifest=canonical(manifest),
                     time=now(),
                 )
-            except Exception:
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            if published:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
         return {"path": str(destination), "samples": len(effective), "mode": plan["mode"]}
+
+
+def verify_run_sources(project, run_id):
+    with transaction(project, readonly=True) as con:
+        run = one(con, "SELECT plan_id FROM llm_runs WHERE id=:id", id=run_id)
+        candidate_policy = plan_uses_candidates(con, run["plan_id"])
+    return verify_sources(project, run_mode(project, run_id), candidate_policy=candidate_policy)

@@ -170,9 +170,5 @@ class Prediction(BaseModel):
 
 
 def prompt_text():
-    text = RESOURCE.joinpath("prompts/prompt_v5_guideline_20260324.txt").read_text(encoding="utf-8")
-    # Keep guideline rules verbatim; replace only the transport contract.
-    return text.split("반드시 아래 JSON 형식으로만 답한다.")[0] + (
-        "\n응답은 labels(모든 라벨 0/1), confidence, reason(한국어), review_required만 포함한다. "
-        "change/class는 출력하지 않는다. labels keys: " + ", ".join(KEYS)
-    )
+    text = RESOURCE.joinpath("prompts/prompt_v6_guideline_20261006.txt").read_text(encoding="utf-8")
+    return text + "\nlabels의 필수 항목: " + ", ".join(KEYS)

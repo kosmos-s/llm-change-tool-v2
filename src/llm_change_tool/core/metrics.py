@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from llm_change_tool.core.labels import KEYS, canonical, digest, validate_labels
+from llm_change_tool.core.labels import FIELDS, KEYS, canonical, digest, validate_labels
 from llm_change_tool.core.projects import now
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
@@ -30,23 +30,46 @@ def binary_metrics(truth, prediction):
     }
 
 
+def overall_metrics(metrics):
+    """Micro average independent top-level labels, excluding children/fixed labels."""
+    keys = [field["key"] for field in FIELDS if not field.get("parent") and "fixed" not in field]
+    if not all(key in metrics for key in keys):
+        return None
+    counts = {key: sum(metrics[label][key] for label in keys) for key in ("tp", "fp", "fn", "tn")}
+    tp, fp, fn = (counts[key] for key in ("tp", "fp", "fn"))
+    return {
+        **counts,
+        "aggregation": "micro",
+        "labels": keys,
+        "defined": bool(tp + fp + fn),
+        "precision": tp / (tp + fp) if tp + fp else 0,
+        "recall": tp / (tp + fn) if tp + fn else 0,
+        "f1": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0,
+        "f2": 5 * tp / (5 * tp + fp + 4 * fn) if 5 * tp + fp + 4 * fn else 0,
+    }
+
+
 def label_metrics(truth, predictions):
     ids = sorted(set(truth) & set(predictions))
-    return {
-        "coverage": len(ids) / len(truth) if truth else 0,
-        "matched": len(ids),
-        "reference": len(truth),
-        "metrics": {
+    scores = (
+        {
             key: binary_metrics([truth[s][key] for s in ids], [predictions[s][key] for s in ids])
             for key in KEYS
         }
         if ids
-        else {},
+        else {}
+    )
+    return {
+        "coverage": len(ids) / len(truth) if truth else 0,
+        "matched": len(ids),
+        "reference": len(truth),
+        "metrics": scores,
+        "overall": overall_metrics(scores),
     }
 
 
 def dashboard(project, run_id=None):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         result = {"sample_total": execute(con, "SELECT count(*) FROM samples").scalar()}
         if not run_id:
             return result
@@ -113,6 +136,7 @@ def dashboard(project, run_id=None):
         truth = {v["id"]: json.loads(v["labels"]) for v in done}
         predictions = {v["id"]: json.loads(v["prediction"])["labels"] for v in paired}
         result["VLM_vs_human"] = label_metrics(truth, predictions)
+        result["VLM_vs_human"].update(partial_review=True, selected_total=len(values))
         return result
 
 
@@ -130,10 +154,12 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
         raise ValueError("평가용은 val 또는 test 하나를 선택하세요.")
     if purpose == "training" and split != "train":
         raise ValueError("학습용은 train을 선택하세요.")
-    from llm_change_tool.core.datasets import verify_sources
+    from llm_change_tool.core.datasets import source_identities
+    from llm_change_tool.core.exporting import verify_run_sources
 
-    if verify_sources(project, "pilot"):
+    if verify_run_sources(project, run_id):
         raise ValueError("Source integrity errors")
+    identities = source_identities(project) if purpose == "evaluation" else {}
     with transaction(project) as con:
         dataset = one(con, "SELECT * FROM datasets")
         values = rows(
@@ -143,8 +169,6 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
             WHERE sample_id=v.sample_id AND run_id=:run) ORDER BY v.sample_id""",
             run=run_id,
         )
-        from llm_change_tool.core.quality import image_identity
-
         samples = rows(con, "SELECT * FROM samples")
         by_id = {s["id"]: s for s in samples}
         if split:
@@ -154,8 +178,8 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
         if not values:
             raise ValueError("Human-confirmed reviews required")
         if purpose == "evaluation":
-            selected_hashes = [image_identity(by_id[v["sample_id"]]) for v in values]
-            other_hashes = {image_identity(s) for s in samples if s["split"] != split}
+            selected_hashes = [identities[v["sample_id"]] for v in values]
+            other_hashes = {identities[s["id"]] for s in samples if s["split"] != split}
             if (
                 len(set(selected_hashes)) != len(selected_hashes)
                 or set(selected_hashes) & other_hashes
@@ -212,7 +236,7 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
 
 
 def evaluate_golden(project, golden_id):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         gold = one(con, "SELECT * FROM golden_sets WHERE id=:id", id=golden_id)
         truth = {
             r["sample_id"]: json.loads(r["labels"])
@@ -278,7 +302,7 @@ def model_evaluation(project, golden_id, name, predictions):
 
 
 def export_golden_template(project, golden_id):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         items = rows(con, "SELECT * FROM golden_items WHERE set_id=:id", id=golden_id)
         if not items:
             raise ValueError("Golden set not found")
@@ -306,7 +330,7 @@ def import_model_predictions(project, path: Path, name):
 
 
 def model_comparison(project):
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         return [
             json.loads(r["payload"])
             for r in rows(con, "SELECT * FROM model_evaluations ORDER BY created_at")
@@ -320,7 +344,7 @@ def review_report(project, run_id):
     from llm_change_tool.core.reviews import review_queue
 
     items = review_queue(project, run_id)
-    with transaction(project) as con:
+    with transaction(project, readonly=True) as con:
         effort = one(
             con,
             """SELECT coalesce(sum(e.seconds),0) seconds FROM review_effort e
