@@ -24,6 +24,17 @@ ERRORS = {
 }
 
 MESSAGES = {
+    "Legacy evaluation has no scene predictions": "이전 평가는 변화 유무별 예측 기록이 없습니다. 실제 모델 예측 JSON을 다시 가져오세요.",
+    "Evaluation reference changed": "평가 당시 고정한 정답과 현재 기록이 다릅니다. 원래 Golden Set을 확인하세요.",
+    "Paired comparison requires complete": "같은 고정 정답의 모든 샘플에 대한 예측이 필요합니다.",
+    "Choose different baseline": "기존 모델과 재학습 모델을 서로 다른 평가 결과로 선택하세요.",
+    "Baseline and retrained models must use": "두 모델은 같은 Golden Set으로 평가해야 합니다. 정답이 다른 점수끼리는 비교할 수 없습니다.",
+    "Evaluation scene counts are inconsistent": "저장된 평가 집계와 개별 예측이 일치하지 않습니다. 실제 예측을 다시 가져오세요.",
+    "Enter non-negative integer TP": "TP,FP,FN,TN 네 개의 0 이상 정수를 입력하세요.",
+    "Prediction template is not complete": "예측 양식은 결과가 아닙니다. 모든 null을 실제 예측 0/1로 채우고 prediction_status를 complete로 바꾸세요.",
+    "Evaluation policy mismatch": "예측 파일의 평가 기준이 다릅니다. 현재 Golden Set의 새 양식을 사용하세요.",
+    "Golden fingerprint mismatch": "예측 파일이 현재 Golden Set과 일치하지 않습니다. 같은 정답으로 예측한 파일을 선택하세요.",
+    "Evaluation export overlaps original dataset": "평가 보고서 저장 경로가 원본 데이터와 겹칩니다. 프로젝트와 데이터 폴더를 분리하세요.",
     "Keep dataset and project folders separate": "프로젝트 폴더와 원본 데이터 폴더를 서로 다른 위치에 두세요.",
     "Dataset content changed": "원본 데이터 내용이 변경되었습니다. 기존 결과는 보존되며, 변경된 데이터는 새 프로젝트에서 사용하세요.",
     "Dataset quality errors": "작업을 막는 데이터 품질 문제가 있습니다. 품질 확인에서 차단 사유를 확인하세요.",

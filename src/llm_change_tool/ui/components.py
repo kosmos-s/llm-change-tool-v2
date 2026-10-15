@@ -245,6 +245,52 @@ class ResultPanel(QFrame):
                     ("제외·비연결 파일", f"{r.get('path')}: {explain_error(r.get('error'))}")
                     for r in inventory["rejected"]
                 ]
+            elif value.get("kind") == "paired_model_comparison":
+                delta = value["delta_percentage_points"]
+                summary = "변화 유무 F1 전후 비교 · " + (
+                    f"{delta:+.2f}%p" if delta is not None else "F1 변화량 정의 불가"
+                )
+                rows = [
+                    ("기준 데이터", value["golden_id"]),
+                    (
+                        "평가 범위",
+                        "고정 test · 내부 기준"
+                        if value["final_test_eligible"]
+                        else "참고 평가 · 최종 test 성과 아님",
+                    ),
+                    ("사람 오류 검토", "대기 · CSV의 manual_checked와 manual_notes에 기록하세요."),
+                ]
+                for key, title in (
+                    ("tp", "정탐 TP"),
+                    ("fp", "오탐 FP"),
+                    ("fn", "미탐 FN"),
+                    ("tn", "정상 음성 TN"),
+                ):
+                    rows.append(
+                        (
+                            title,
+                            f"{value['baseline']['scene'][key]} → {value['candidate']['scene'][key]}",
+                        )
+                    )
+                if "path" in value:
+                    self.output_path = str(value["path"])
+                    rows.append(("보고서", self.output_path))
+                    rows.append(("수동 검토 CSV", value["manual_audit_path"]))
+            elif value.get("kind") == "manual_count_check":
+                summary = (
+                    "수동 집계 일치"
+                    if value["matches"]
+                    else "수동 집계 불일치 · TP/FP/FN/TN을 다시 확인하세요."
+                )
+                rows = [
+                    ("집계 건수", str(value["total"])),
+                    (
+                        "수동 집계 F1",
+                        f"{value['f1']:.1%}" if value["f1"] is not None else "정의 불가",
+                    ),
+                    ("확인 범위", "숫자 대조이며 영상 판정의 정확도를 확인한 것은 아닙니다."),
+                ]
+                level = "success" if value["matches"] else "warning"
             elif "passed" in value:
                 summary = (
                     "품질 확인 통과 · 결과를 내보낼 수 있습니다."
@@ -385,6 +431,8 @@ class ResultPanel(QFrame):
             elif "path" in value:
                 self.output_path = str(value["path"])
                 summary = "파일 저장 완료\n" + self.output_path
+                if value.get("note"):
+                    summary += "\n" + value["note"]
                 if "samples" in value:
                     rows = [("저장 항목", f"{value['samples']:,}건")]
             elif any(k in value for k in ("NEW", "SAME", "CONFLICT")):
@@ -460,12 +508,18 @@ class DashboardPanel(QWidget):
             content.addWidget(val)
             grid.addWidget(frame, index // 4, index % 4)
         layout.addLayout(grid)
-        self.overall = text_label("종합 F1 · 아직 평가하지 않았습니다.", "reviewSummary")
+        self.overall = text_label("변화 유무 F1 · 아직 평가하지 않았습니다.", "reviewSummary")
         self.overall.setToolTip(
-            "인공물·나무·산림·농경지·수계의 정탐·오탐·미탐을 합산합니다. 세부 라벨과 고정 0 라벨은 종합 점수에서 제외합니다."
+            "대표: 주요 5개 라벨 중 하나라도 양성이면 변화 있음으로 계산합니다. 보조: 주요 5개 라벨의 micro F1입니다. 세부 라벨과 도로 표식은 대표·보조 집계에서 제외합니다."
         )
         layout.addWidget(self.overall)
-        self.metric_table = table(["평가 대상 / 라벨", "Precision", "Recall", "F1", "F2"])
+        self.metric_table = table(
+            ["평가 대상 / 라벨", "Precision", "Recall", "F1", "F2", "TP", "FP", "FN", "TN"]
+        )
+        self.metric_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive
+        )
+        self.metric_table.setColumnWidth(0, 320)
         self.metric_table.setMinimumHeight(300)
         self.metric_table.hide()
         layout.addWidget(self.metric_table)
@@ -475,7 +529,7 @@ class DashboardPanel(QWidget):
     def reset(self):
         for val in self.metrics.values():
             val.setText("—")
-        self.overall.setText("종합 F1 · 아직 평가하지 않았습니다.")
+        self.overall.setText("변화 유무 F1 · 아직 평가하지 않았습니다.")
         self.metric_table.setRowCount(0)
         self.metric_table.hide()
         self.result.reset()
@@ -496,6 +550,8 @@ class DashboardPanel(QWidget):
         )
         if isinstance(value, dict) and "VLM_vs_human" in value:
             reports = [{"name": "AI · 사람", **value["VLM_vs_human"]}]
+        elif isinstance(value, dict) and value.get("kind") == "paired_model_comparison":
+            reports = [value["baseline"], value["candidate"]]
         elif isinstance(value, dict) and "metrics" in value:
             reports = [value]
         from llm_change_tool.core.metrics import overall_metrics
@@ -510,13 +566,45 @@ class DashboardPanel(QWidget):
                 scope = f"부분 평가 {matched}건 · 선택 작업 {report['selected_total']}건 중 검수 완료 항목"
             elif matched != reference:
                 scope += " · 예측 누락 있음: 전체 평가 아님"
+            if report.get("golden_id"):
+                scope += f" · 기준 {report['golden_id'][:8]} / {report.get('split', '미지정')}"
+            if report.get("provider") == "mock":
+                scope += " · Mock 시험 결과 / 실제 AI 정확도 아님"
+            scene = report.get("scene")
+            if scene:
+                primary = [f"{scene[k]:.1%}" for k in ("precision", "recall", "f1", "f2")]
+                if not scene["defined"]:
+                    primary = ["—"] * 4
+                cells.append(
+                    [
+                        f"{name} · 대표 변화 유무",
+                        *primary,
+                        *[str(scene[k]) for k in ("tp", "fp", "fn", "tn")],
+                    ]
+                )
+                summaries.append(
+                    f"{name} · 변화 유무 F1 {primary[2]} · {scope}"
+                    + (" · 양성·오탐·미탐이 없어 정의할 수 없음" if not scene["defined"] else "")
+                )
+            else:
+                summaries.append(
+                    f"{name} · 변화 유무 F1 — · 이전 기록에는 장면 예측이 없습니다. 실제 예측을 다시 가져오세요."
+                    if overall
+                    else f"{name} · 변화 유무 F1 — · 평가할 정답과 예측이 필요합니다."
+                )
             if overall:
                 scores = [f"{overall[k]:.1%}" for k in ("precision", "recall", "f1", "f2")]
                 if not overall["defined"]:
                     scores = ["—"] * 4
-                cells.append([f"{name} · 종합 (주요 5개 라벨·micro)", *scores])
+                cells.append(
+                    [
+                        f"{name} · 보조 종합 (주요 5개 라벨·micro)",
+                        *scores,
+                        *[str(overall[k]) for k in ("tp", "fp", "fn", "tn")],
+                    ]
+                )
                 summaries.append(
-                    f"{name} · 종합 F1 {scores[2]} · {scope}"
+                    f"{name} · 보조 micro F1 {scores[2]} · {scope}"
                     + (
                         " · 변화 양성·오탐·미탐이 없어 F1을 정의할 수 없음"
                         if not overall["defined"]
@@ -529,11 +617,14 @@ class DashboardPanel(QWidget):
                 cells.append(
                     [f"{name} · {titles.get(key, key)}"]
                     + [f"{scores[k]:.1%}" for k in ("precision", "recall", "f1", "f2")]
+                    + [str(scores[k]) for k in ("tp", "fp", "fn", "tn")]
                 )
-        self.overall.setText("\n".join(summaries) or "종합 F1 · 아직 평가하지 않았습니다.")
+        self.overall.setText("\n".join(summaries) or "변화 유무 F1 · 아직 평가하지 않았습니다.")
         self.metric_table.setRowCount(len(cells))
         for r, row in enumerate(cells):
             for c, cell in enumerate(row):
-                self.metric_table.setItem(r, c, QTableWidgetItem(cell))
+                item = QTableWidgetItem(cell)
+                item.setToolTip(cell)
+                self.metric_table.setItem(r, c, item)
         self.metric_table.setVisible(bool(cells))
         return self.result.set_result(value)

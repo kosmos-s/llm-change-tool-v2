@@ -26,4 +26,6 @@ Run relevant pytest checks and commit each phase; do not wait for routine user d
 - Verify fixes with meaningful regression tests and required repository checks. Validate the import/Mock/review/save/reopen/export flow when affected.
 - Explain changes, test evidence, user-PC checks and unresolved company decisions separately, in plain Korean.
 - Make routine implementation decisions autonomously. For the current handoff, push a verified branch and PR when requested; do not merge main or publish a new release unless requested.
+- Internal evaluation policy scene-f1-v1: primary scene change F1 is OR of arti/tree/fore/farm/water; retain major-label micro F1 as secondary. Compare actual baseline/retrained predictions on the same frozen human reference. Do not treat internal criteria as company-confirmed targets.
+- User permits all provided files as candidates, subject to quality/deduplication/split guards. English reasons are optional. Automatic metric calculation and manual image/count audit are both supported; do not invent a company training pipeline or human-confirmed truth.
 

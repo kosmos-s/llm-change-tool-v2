@@ -12,8 +12,26 @@ New default is detailed; legacy core pilot semantics remain explicit. Production
 requires low-confidence review even for legacy comparisons. Schema 7 adds an
 audited image-reservation override so existing jobs can resume without rewriting
 their frozen settings. Back up before opening; older binaries cannot open v7 DBs.
-Corporate references remain outside the repository. Items 4–5 and all pending
-company decisions remain unresolved; Mock checks do not establish real accuracy.
+Corporate references remain outside the repository. The latest user decisions
+below supersede historical pending statements. Mock checks do not establish real accuracy.
+
+## User decisions and evaluation follow-up (2026-10-15, unreleased)
+User permits all provided files as candidates, subject to quality/dedup/split
+checks. English reasons are optional; automatic paid translation is not needed.
+User expects F1 and authorizes defining internal criteria. scene-f1-v1 uses OR
+of arti/tree/fore/farm/water as the primary binary scene-change F1; major-label
+micro F1 remains secondary. This is an internal working policy, not confirmation
+of the company's official metric or target. See docs/evaluation-policy.md.
+Automatic evaluation of actual baseline/retrained predictions on the same fixed
+human reference and manual image/count audit are supported. Actual model
+training is external; no training code/weights were found in the provided folder.
+Do not create real human truth by auto-approving source/Mock labels. Real Mock
+pilots remain drafts pending actual human review. No paid production is approved.
+Offline checks: 161 pytest passed; final affected checks 15 passed; Ruff/format,
+compileall, self-test and GUI/worker smoke passed. A separate real-file 20-item
+Mock project has 20 DRAFT / 0 human-complete reviews and a correctly blocked
+Export Gate; reopen/backup/restore and 80 original-file hashes checked.
+See docs/evaluation-verification-20261015.md. This is not measured model gain.
 
 ## Purpose and constraints
 Repository: https://github.com/kosmos-s/llm-change-tool-v2
@@ -35,7 +53,7 @@ First reproduce against current code; skip already-fixed findings.
 1. arti_other_detail can remain after arti_other is cleared. Fix effective review/export data without changing original JSON.
 2. core low-confidence behavior: all-zero labels, confidence=0.1, review_required=false matching original labels could become AUTO_KEEP. Review policy intentionally differed from detailed policy. Design explicit review behavior and verify required-review counts, existing jobs and Gate compatibility.
 3. Fixed 20,000 input-token reservation can underestimate larger-image requests. Account for model/image dimensions/detail, prompt/schema, output allowance, retries and concurrent reservations. Unknown prices must not silently be zero. Distinguish estimates from a provider-enforced billing cap. Test offline.
-4. English reasons are not automatically translated; stale English can be cleared after edits. English deliverable requirement remains undecided. Report options; do not add paid translation automatically.
+4. English reasons are not automatically translated; stale English can be cleared after edits. User has confirmed English is optional. Do not add paid translation automatically.
 5. Company model training and area annotation/IoU evaluation are not a complete included pipeline. Do not claim label comparison metrics prove retrained-model gains.
 
 For the next coding task: reproduce and fix items 1–3, add regression tests, run relevant/full required checks, verify affected end-to-end flow with Mock. Commit on a separate branch and open a PR if authorized by the starting prompt. No main merge/release or paid API call in this task.
