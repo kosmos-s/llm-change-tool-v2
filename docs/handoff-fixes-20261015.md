@@ -45,7 +45,7 @@ Gate 결과의 human_complete/total, all_human_reviewed 및 화면 안내로 사
 - 스키마 6 → 7 자동 백업, 설정 보존, 예약 변경 이력·충돌 검사, 같은 작업 재개, 백업 복원.
 - Qt offscreen 검수 화면에서 체크박스와 최종 설명의 일치, Gate에서 사람 검수 범위 안내.
 
-전체 검사 결과는 이 브랜치의 PR 검증 기록에 기재합니다. 기존 Windows 테스트에서 UTF-8 JSON을 시스템 기본 CP949로 읽던 부분도 명시적 UTF-8로 고쳤습니다.
+Windows / Python 3.11.17 / QT_QPA_PLATFORM=offscreen에서 전체 pytest 154개, Ruff 검사·포맷, compileall, Git index 비밀정보/데이터 검사, 자체 self-test(합성 6건·network_calls=0), GUI/worker smoke, 합성 UI 캡처를 통과했습니다. 전체 검사 후 검수 요약 조회가 전체 계획 JSON을 다시 읽지 않도록 최적화하고 관련 검사를 별도로 재실행했습니다. Windows 테스트에서 UTF-8 JSON을 시스템 기본 CP949로 읽던 부분도 명시적 UTF-8로 고쳤습니다. GitHub CI 결과는 PR 검증 기록을 함께 확인하세요.
 
 제공된 회사 샘플 12개의 JSON 구조와 영상 크기(해당 표본 combined 336×166)를 읽기 전용으로 참고하고 읽기 전후 해시가 같음을 확인했습니다. 회사 자료를 테스트 fixture로 커밋하거나 실제 판정·검수 성과로 사용하지 않았습니다. 이번 전체 흐름 검증은 위 합성 6건입니다.
 

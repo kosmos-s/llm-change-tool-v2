@@ -4,6 +4,8 @@ Updated: 2026-10-15. Historical facts below were last verified on 2026-10-10. In
 ## Current follow-up branch (2026-10-15, unreleased)
 Items 1–3 below were reproduced on main 0b63f14 and fixes are implemented on
 fix/handoff-review-and-budget. See docs/handoff-fixes-20261015.md for verification.
+Windows/Python 3.11 offline verification: 154 pytest passed, Ruff/format,
+compileall, index secret/data scan, self-test and offscreen GUI/worker smoke passed.
 Original contract preserved; added working rules merged. No main merge/release,
 paid API call or company-source modification is authorized by this follow-up.
 New default is detailed; legacy core pilot semantics remain explicit. Production

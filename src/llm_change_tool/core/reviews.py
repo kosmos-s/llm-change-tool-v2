@@ -2,7 +2,7 @@
 
 import json
 
-from llm_change_tool.core.jobs import validate_run
+from llm_change_tool.core.jobs import RunConfig, validate_run
 from llm_change_tool.core.labels import (
     KEYS,
     Prediction,
@@ -32,10 +32,17 @@ REQUIRED_SQL = "(c.required=1 OR (:low AND c.signals LIKE '%\"low_confidence\"%'
 
 
 def run_requires_low_confidence(con, run_id):
-    run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
-    config = validate_run(con, run)
-    mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
-    return low_confidence_required(config, mode)
+    # UI summaries need only the frozen policy and mode. Full provenance/plan
+    # validation stays in compare/prepare/Gate, avoiding a second load of every
+    # source JSON just to display a review counter.
+    context = one(
+        con,
+        "SELECT r.config,p.mode FROM llm_runs r JOIN work_plans p ON p.id=r.plan_id WHERE r.id=:id",
+        id=run_id,
+    )
+    return low_confidence_required(
+        RunConfig.model_validate_json(context["config"]), context["mode"]
+    )
 
 
 def compare_run(project, run_id):
