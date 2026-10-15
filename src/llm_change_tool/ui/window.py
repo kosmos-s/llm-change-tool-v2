@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from llm_change_tool import BUILD_ID, __version__
 from llm_change_tool.core.candidates import targets
+from llm_change_tool.core.costs import TILE_MODELS
 from llm_change_tool.core.datasets import blocking_issues, import_dataset
 from llm_change_tool.core.exporting import export_run, final_gate
 from llm_change_tool.core.jobs import (
@@ -36,6 +38,7 @@ from llm_change_tool.core.jobs import (
     recover_jobs,
     run_job,
     update_budget,
+    update_image_reservation,
 )
 from llm_change_tool.core.labels import prompt_text
 from llm_change_tool.core.model_catalog import OPENAI_MODELS, PRICE_CHECKED_AT, model_spec
@@ -243,6 +246,7 @@ class MainWindow(ProjectWindow):
             and self.job_provider == "openai"
             and self.job_state in ("PENDING", "PAUSED", "FAILED")
         )
+        self.reservation_button.setEnabled(self.budget_button.isEnabled())
         if hasattr(self, "project_chip"):
             self.retry_button.setEnabled(
                 bool(self.job_id) and not busy and self.job_state == "FAILED"
@@ -312,8 +316,9 @@ class MainWindow(ProjectWindow):
         self.budget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.budget.setValue(5)
         self.policy = QComboBox()
-        self.policy.addItem("기본 · 불일치 중심으로 검수", "core")
-        self.policy.addItem("상세 · 낮은 신뢰도도 검수", "detailed")
+        self.policy.addItem("기본 · 불일치와 낮은 신뢰도 검수", "detailed")
+        self.policy.addItem("이전 core · 시험용 낮은 신뢰도 자동 유지 허용", "core")
+        self.policy.setToolTip("본작업은 정책에 관계없이 낮은 신뢰도도 필수 검수합니다.")
         left.addRow("작업 범위", self.mode)
         left.addRow("AI 공급자", self.provider)
         left.addRow("시험용 표본 수 (건)", self.pilot_count)
@@ -336,6 +341,14 @@ class MainWindow(ProjectWindow):
         api.addRow("자동 단가", self.model_price_hint)
         self.cost_preview = text_label("", "muted")
         api.addRow("비용 예상", self.cost_preview)
+        self.image_tokens = QSpinBox()
+        self.image_tokens.setRange(0, 2000000)
+        self.image_tokens.setSpecialValueText("자동 · 미확인 모델은 입력 필요")
+        self.image_tokens.setToolTip(
+            "이미지 1장당 입력 토큰 예약 추정치입니다. 공식 계산 규칙이 미확인인 모델은 직접 지정해야 합니다. 실제 과금 상한이 아닙니다."
+        )
+        self.image_tokens.valueChanged.connect(self.update_cost_preview)
+        api.addRow("이미지 1장 토큰 예약", self.image_tokens)
         self.approve_api = QCheckBox("선택한 이미지를 OpenAI로 전송하고 유료 분석을 실행합니다.")
         api.addRow(self.approve_api)
         self.api_readiness = text_label("", "muted")
@@ -397,6 +410,9 @@ class MainWindow(ProjectWindow):
         budget_bar = QHBoxLayout()
         self.budget_button = self.button(
             "선택 작업 예산 변경", self.change_budget, budget_bar, requires="run"
+        )
+        self.reservation_button = self.button(
+            "선택 작업 이미지 예약 변경", self.change_image_reservation, budget_bar, requires="run"
         )
         budget_bar.addWidget(text_label("완료 결과를 유지하며 예산만 변경합니다.", "muted"), 1)
         self.retry_button = self.button(
@@ -494,18 +510,17 @@ class MainWindow(ProjectWindow):
             self.cost_preview.setText("기존 작업은 생성 당시 저장된 단가로 계산합니다.")
             tone(self.cost_preview, "info")
             return
-        per_item = (20000 * spec.input_price + 1200 * spec.output_price) / 1_000_000
-        estimate = per_item * count
-        limit = self.budget.value()
-        message = (
-            f"보수적 예약 상한 · {count:,}건 × ${per_item:.4f} ≈ ${estimate:.4f} · "
-            f"설정 한도 ${limit:.4f}"
-        )
-        if estimate > limit:
-            message += " · 한도 부족 가능"
-            tone(self.cost_preview, "warning")
+        manual = self.image_tokens.value() if hasattr(self, "image_tokens") else 0
+        if spec.model not in TILE_MODELS and not manual:
+            message = (
+                "이미지 토큰 규칙 미확인 · 이미지 1장 토큰 예약을 입력해야 분석할 수 있습니다."
+            )
         else:
-            tone(self.cost_preview, "info")
+            message = f"{count:,}건 · 각 요청 직전 실제 이미지 크기·프롬프트·출력량으로 예약합니다."
+        message += (
+            f" 앱 예상 예산 ${self.budget.value():.4f} · 재시도는 추가 예약 · 공급자 과금 상한 아님"
+        )
+        tone(self.cost_preview, "info")
         self.cost_preview.setText(message)
 
     def focus_api_requirement(self, widget):
@@ -787,6 +802,7 @@ class MainWindow(ProjectWindow):
                 output_price=spec.output_price if spec else 0,
                 cost_limit=self.budget.value(),
                 review_policy=self.policy.currentData(),
+                image_token_override=self.image_tokens.value() or None,
             )
             mode = self.mode.currentData()
             count = self.pilot_sample_count() if mode == "pilot" else None
@@ -893,6 +909,7 @@ class MainWindow(ProjectWindow):
                 self.model.setCurrentIndex(model_index)
                 self.budget.setValue(config["cost_limit"])
                 self.policy.setCurrentIndex(self.policy.findData(config["review_policy"]))
+                self.image_tokens.setValue(config.get("image_token_override") or 0)
                 self.prompt.setPlainText(selected["prompt"])
                 self.results.reset()
                 self.analysis.reset()
@@ -978,6 +995,29 @@ class MainWindow(ProjectWindow):
             self.background(
                 lambda p: update_budget(
                     self.project, job_id, limit, expected_limit=current, reason=reason
+                )
+            )
+
+    def change_image_reservation(self):
+        if not self.job_id:
+            return
+        current = job_info(self.project, self.job_id)["image_token_override"]
+        tokens, ok = QInputDialog.getInt(
+            self,
+            "선택 작업 이미지 예약 변경",
+            "이미지 1장 토큰 예약 (0=자동, 미확인 모델은 직접 지정)",
+            current or 0,
+            0,
+            2000000,
+        )
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, "이미지 예약 변경 이력", "추정 근거 및 변경 사유")
+        if ok:
+            job_id = self.job_id
+            self.background(
+                lambda p: update_image_reservation(
+                    self.project, job_id, tokens or None, expected_tokens=current, reason=reason
                 )
             )
 

@@ -42,11 +42,13 @@ OpenAI SDK 자체 retry는 끄고 각 시도를 DB에 기록합니다. 연결/42
 
 ## 판단과 최종 품질
 
-원본, AI, 사람 검수는 별도로 보존합니다. Compare는 change/detail mismatch, confidence, self-review, malformed/API error를 기록합니다. v1 core 정책처럼 low confidence 단독은 기록만 하며 detailed 정책에서는 필수 검수로 처리합니다.
+원본, AI, 사람 검수는 별도로 보존합니다. Compare는 change/detail mismatch, confidence, self-review, malformed/API error를 기록합니다. 새 작업의 기본은 detailed이며 low confidence 단독도 필수 검수합니다. 이전 core 시험용 작업은 기존 정책을 유지하지만 production은 core를 포함해 필수 검수합니다. 이전 비교 행을 다시 쓰기 전에도 검수 목록·요약·통계·준비·Gate에 이 최소 규칙을 적용합니다.
 
 Review는 DONE/DEFERRED/DRAFT입니다. 자동 저장은 DRAFT이며 완료를 의미하지 않습니다. Save는 새 revision을 추가하고 낙관적 잠금으로 stale overwrite를 막습니다. Undo도 기존 이력을 삭제하지 않고 새 revision을 남깁니다.
 
 Final Gate는 plan·config·source SHA256, AI 성공/오류, Compare 및 review-list 누락, 필수 검수, deferred/draft, 유효 JSON, 팀 충돌을 검사합니다. 검수 불필요 항목만 AUTO_KEEP 원본 fallback이 허용됩니다. 필수 검수를 원본 fallback으로 숨기지 않습니다.
+
+Gate의 human_complete/total 및 all_human_reviewed는 사람 검수 범위를 구분합니다. Gate 통과는 전건 검수나 성능 향상을 입증하지 않습니다. 최종 JSON의 arti_other가 0이면 기존 arti_other_detail 키는 빈 문자열로 정리하며 원본 바이트는 보존합니다.
 
 Export는 원본과 분리된 `.incomplete-UUID` 준비 폴더에 JSON/JPG/manifest를 모두 쓴 뒤 최종 폴더명으로 바꿉니다. 처리 오류가 나면 준비 폴더를 제거합니다. OS 강제 종료로 남은 `.incomplete-*` 폴더는 완료 산출물이 아닙니다. JSON의 모르는 필드도 유지합니다. 복사한 이미지 해시를 다시 확인합니다. Mock은 pilot 결과만 만들며 production은 정확한 3,000건과 OpenAI coverage를 요구합니다.
 
@@ -62,3 +64,11 @@ Export는 원본과 분리된 `.incomplete-UUID` 준비 폴더에 JSON/JPG/manif
 - 종합 F1은 schema의 parent/fixed가 없는 주요 5개 라벨의 confusion counts를 합산한 micro입니다. 라벨별 지표와 분리하며 coverage와 부분 검수 평가를 표시합니다. 전부 음성이어서 TP+FP+FN=0이면 종합 F1을 정의하지 않습니다.
 - schema v6은 attempt_diagnostics만 추가합니다. 요청 ID, 종료 이유, 영상 준비/요청 시간이며 API Key나 요청 영상을 저장하지 않습니다. 확인된 사용량을 가진 잘림/거부 응답도 실패 비용에 기록합니다. 미확정 원격 결과의 예약액은 보존합니다.
 - 기본 prompt v6은 새 작업에만 적용합니다. 저장된 작업의 모델·프롬프트·스키마 hash는 바꾸지 않습니다.
+
+## 2026-10-15 미배포 수정
+
+스키마 7은 job_reservation_events만 추가합니다. 기존 프로젝트를 열면 백업한 뒤 전환하며 모델·프롬프트·검수·과거 예약액은 바꾸지 않습니다. 예약 추정치 변경은 프로젝트 잠금, 이전 값 확인, 사유·시간 이력으로 관리합니다. 구 설정의 해시는 저장된 JSON 필드로 검증하여 새 선택 필드 추가가 작업 재개를 막지 않게 합니다.
+
+영상 준비와 토큰 추정은 쓰기 잠금 밖에서 실행합니다. API 전송 직전 짧은 쓰기 트랜잭션에서 누적 사용액+RUNNING/UNKNOWN 예약액+이번 예약액을 검사하고 attempt를 생성합니다. worker는 프로젝트 단위로 하나만 실행되므로 동시 호출이 같은 예산을 소비하지 않습니다. 재시도도 별도 예약하며 불명확한 이전 비용은 유지합니다. 사용량이 확인된 실패도 비용을 기록하고 예약 초과 시 멈춥니다.
+
+자동 영상 계산은 공식 tile 규칙을 확인한 gpt-4o-mini/gpt-4o/gpt-4.1만 지원합니다. 그 외 모델은 명시한 장당 추정치를 사용하며 미입력은 전송 전에 중지합니다. 프롬프트·사용자 지시·응답 스키마의 UTF-8 바이트 수와 여유분, 출력 한도를 포함합니다. 기존 input_token_reserve는 최소 예약량으로 유지하며 실제 계산량이 크면 늘립니다. 보수적 추정이며 공급자 과금 한도는 아닙니다.

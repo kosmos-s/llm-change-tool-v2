@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from llm_change_tool.core.labels import FIELDS, KEYS, canonical, digest, validate_labels
 from llm_change_tool.core.projects import now
+from llm_change_tool.core.reviews import REQUIRED_SQL, run_requires_low_confidence
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
@@ -99,9 +100,14 @@ def dashboard(project, run_id=None):
                 job=job["id"],
             )
         )
-        comps = rows(con, "SELECT * FROM comparisons WHERE run_id=:run", run=run_id)
+        comps = rows(
+            con,
+            f"SELECT c.*,{REQUIRED_SQL} effective_required FROM comparisons c WHERE run_id=:run",
+            run=run_id,
+            low=run_requires_low_confidence(con, run_id),
+        )
         result.update(
-            compare_complete=len(comps), review_required=sum(c["required"] for c in comps)
+            compare_complete=len(comps), review_required=sum(c["effective_required"] for c in comps)
         )
         values = rows(
             con,
@@ -122,7 +128,11 @@ def dashboard(project, run_id=None):
         result["modified"] = sum(
             json.loads(v["labels"]) != json.loads(v["original_labels"]) for v in done
         )
-        auto = {c["sample_id"] for c in comps if c["decision"] == "AUTO_KEEP"}
+        auto = {
+            c["sample_id"]
+            for c in comps
+            if c["decision"] == "AUTO_KEEP" and not c["effective_required"]
+        }
         result["original_kept"] = (
             len(done) - result["modified"] + sum(v["id"] in auto and not v["state"] for v in values)
         )

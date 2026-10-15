@@ -190,10 +190,13 @@ def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
     window.model.setCurrentIndex(window.model.findData("gpt-6-luna"))
     assert "입력 $0.1" in window.model_price_hint.text()
     assert "출력 $0.5" in window.model_price_hint.text()
+    assert "규칙 미확인" in window.cost_preview.text()
+    assert "$0.1300" not in window.cost_preview.text()
+    window.image_tokens.setValue(60000)
     assert "50건" in window.cost_preview.text()
-    assert "$0.1300" in window.cost_preview.text()
     window.budget.setValue(0.1)
-    assert "한도 부족 가능" in window.cost_preview.text()
+    assert "예상 예산 $0.1000" in window.cost_preview.text()
+    assert "과금 상한 아님" in window.cost_preview.text()
     assert window.key.echoMode() == window.key.EchoMode.Password
     window.key_visibility.click()
     assert window.key.echoMode() == window.key.EchoMode.Normal
@@ -201,7 +204,8 @@ def test_model_and_pilot_count_are_choices_with_automatic_prices(tmp_path):
     window.mode.setCurrentIndex(window.mode.findData("production"))
     assert "dataset+errors 전체" in window.selection_hint.text()
     assert "train·val·test 각 1,000건" in window.selection_hint.text()
-    assert "$7.8000" in window.cost_preview.text()
+    assert "3,000건" in window.cost_preview.text()
+    assert "$7.8000" not in window.cost_preview.text()
     window.close()
     app.processEvents()
 

@@ -26,6 +26,9 @@ def response_schema():
     }
 
 
+USER_INSTRUCTION = "T1(과거), T2(현재) 순서입니다. 가이드에 따라 판정하세요."
+
+
 class OpenAIProvider:
     def __init__(self, api_key: str):
         if not api_key.strip():
@@ -39,9 +42,7 @@ class OpenAIProvider:
             self.client = None
 
     def predict(self, images, prompt, config):
-        content = [
-            {"type": "text", "text": "T1(과거), T2(현재) 순서입니다. 가이드에 따라 판정하세요."}
-        ]
+        content = [{"type": "text", "text": USER_INSTRUCTION}]
         for image in images:
             buf = io.BytesIO()
             image.save(buf, format="JPEG", quality=95)
@@ -51,7 +52,7 @@ class OpenAIProvider:
                     "image_url": {
                         "url": "data:image/jpeg;base64,"
                         + base64.b64encode(buf.getvalue()).decode(),
-                        "detail": "high",
+                        "detail": config.image_detail,
                     },
                 }
             )

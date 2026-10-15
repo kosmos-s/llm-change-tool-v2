@@ -4,6 +4,8 @@ import hashlib
 import re
 
 ERRORS = {
+    "Image reservation updated; resume analysis": "이미지 예약 추정치를 변경했습니다. ‘분석 시작 / 이어하기’를 눌러 남은 항목을 처리하세요.",
+    "unverified_cost_estimate": "이미지 토큰 계산 규칙이 미확인입니다. ‘선택 작업 이미지 예약 변경’에서 이미지 1장 예약 추정치를 지정하세요. API는 호출하지 않았습니다.",
     "http_401": "인증 실패 · API Key 수정 후 ‘인증·결제 수정 후 실패 복구’를 사용하세요.",
     "http_403": "접근 거부 · API Key의 프로젝트·모델 접근 권한을 확인하세요.",
     "http_429": "요청 제한 또는 사용 한도 · API 계정의 한도를 확인하고 잠시 후 재시도하세요.",

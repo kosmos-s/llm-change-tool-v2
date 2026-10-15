@@ -24,7 +24,8 @@ def config():
     return RunConfig(provider="openai", input_price=1, output_price=2)
 
 
-def test_actual_sdk_payload_and_usage_without_network(monkeypatch):
+@pytest.mark.parametrize("detail", ["low", "high", "auto"])
+def test_actual_sdk_payload_and_usage_without_network(monkeypatch, detail):
     prediction = json.dumps(
         dict(labels=dict.fromkeys(KEYS, 0), confidence=0.8, reason="합성", review_required=False)
     )
@@ -42,6 +43,7 @@ def test_actual_sdk_payload_and_usage_without_network(monkeypatch):
         assert all(
             item["image_url"]["url"].startswith("data:image/jpeg;base64,") for item in content[1:]
         )
+        assert all(item["image_url"]["detail"] == detail for item in content[1:])
         return httpx.Response(
             200,
             json={
@@ -62,7 +64,9 @@ def test_actual_sdk_payload_and_usage_without_network(monkeypatch):
 
     install_transport(monkeypatch, handle)
     result = OpenAIProvider("synthetic-only").predict(
-        [Image.new("RGB", (32, 32))] * 2, "guideline", config()
+        [Image.new("RGB", (32, 32))] * 2,
+        "guideline",
+        config().model_copy(update={"image_detail": detail}),
     )
     assert result.raw == prediction
     assert result.input_tokens == 321 and result.output_tokens == 42

@@ -1,6 +1,18 @@
 # LLM Change Tool v2 — handoff
 Updated: 2026-10-15. Historical facts below were last verified on 2026-10-10. Inspect current main and open PRs before modifying.
 
+## Current follow-up branch (2026-10-15, unreleased)
+Items 1–3 below were reproduced on main 0b63f14 and fixes are implemented on
+fix/handoff-review-and-budget. See docs/handoff-fixes-20261015.md for verification.
+Original contract preserved; added working rules merged. No main merge/release,
+paid API call or company-source modification is authorized by this follow-up.
+New default is detailed; legacy core pilot semantics remain explicit. Production
+requires low-confidence review even for legacy comparisons. Schema 7 adds an
+audited image-reservation override so existing jobs can resume without rewriting
+their frozen settings. Back up before opening; older binaries cannot open v7 DBs.
+Corporate references remain outside the repository. Items 4–5 and all pending
+company decisions remain unresolved; Mock checks do not establish real accuracy.
+
 ## Purpose and constraints
 Repository: https://github.com/kosmos-s/llm-change-tool-v2
 Two aerial images T1/T2 + original JSON → LLM classification → comparison → human review → separate corrected JSON.

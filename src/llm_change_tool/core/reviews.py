@@ -22,10 +22,27 @@ def result_binding(sample, result, error):
     return digest({"original": sample["hashes"], "prediction": result, "error": error})
 
 
+def low_confidence_required(config, mode):
+    # Legacy core remains available for pilots. Production always requires a
+    # human decision below the frozen threshold, including already-created runs.
+    return mode == "production" or config.review_policy == "detailed"
+
+
+REQUIRED_SQL = "(c.required=1 OR (:low AND c.signals LIKE '%\"low_confidence\"%'))"
+
+
+def run_requires_low_confidence(con, run_id):
+    run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
+    config = validate_run(con, run)
+    mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
+    return low_confidence_required(config, mode)
+
+
 def compare_run(project, run_id):
     with transaction(project) as con:
         run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
         config = validate_run(con, run)
+        mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
         items = rows(
             con,
             """SELECT s.*, i.error, i.state item_state,r.prediction,f.domain failure_domain FROM samples s
@@ -75,9 +92,12 @@ def compare_run(project, run_id):
                         signals.append("review_required")
                 except ValueError:
                     signals.append("malformed_output")
-            # core records low confidence but it alone does not force review (v1 policy).
             needed = bool(
-                [s for s in signals if s != "low_confidence" or config.review_policy == "detailed"]
+                [
+                    s
+                    for s in signals
+                    if s != "low_confidence" or low_confidence_required(config, mode)
+                ]
             )
             required += needed
             binding = result_binding(sample, prediction, sample["error"])
@@ -310,12 +330,12 @@ def review_queue(project, run_id, filter_name="all"):
     condition = {
         "unreviewed": "WHERE coalesce(v.result_hash=c.result_hash,0)=0 OR coalesce(v.state,'') NOT IN ('DONE','DEFERRED')",
         "deferred": "WHERE v.state='DEFERRED'",
-        "required": "WHERE c.required=1 AND (coalesce(v.state,'')!='DONE' OR coalesce(v.result_hash=c.result_hash,0)=0)",
+        "required": f"WHERE {REQUIRED_SQL} AND (coalesce(v.state,'')!='DONE' OR coalesce(v.result_hash=c.result_hash,0)=0)",
     }.get(filter_name, "")
     with transaction(project, readonly=True) as con:
         result = rows(
             con,
-            f"""SELECT s.*,c.required,c.signals,c.result_hash,r.prediction,
+            f"""SELECT s.*,CASE WHEN {REQUIRED_SQL} THEN 1 ELSE 0 END required,c.signals,c.result_hash,r.prediction,
             v.state review_state,v.revision,v.labels reviewed_labels,v.reason reviewed_reason,v.reason_en reviewed_reason_en,v.reviewer,
             coalesce(v.result_hash=c.result_hash,0) review_current
             FROM samples s JOIN comparisons c ON c.sample_id=s.id AND c.run_id=:run
@@ -324,6 +344,7 @@ def review_queue(project, run_id, filter_name="all"):
                 WHERE run_id=:run AND sample_id=s.id)
             {condition} ORDER BY s.logical_key""",
             run=run_id,
+            low=run_requires_low_confidence(con, run_id),
         )
     return result
 
@@ -333,14 +354,15 @@ def review_summary(project, run_id):
     with transaction(project, readonly=True) as con:
         return one(
             con,
-            """SELECT count(*) total,
-            coalesce(sum(CASE WHEN c.required=1 AND NOT (coalesce(v.state,'')='DONE' AND coalesce(v.result_hash,'')=c.result_hash) THEN 1 ELSE 0 END),0) required_remaining,
+            f"""SELECT count(*) total,
+            coalesce(sum(CASE WHEN {REQUIRED_SQL} AND NOT (coalesce(v.state,'')='DONE' AND coalesce(v.result_hash,'')=c.result_hash) THEN 1 ELSE 0 END),0) required_remaining,
             coalesce(sum(CASE WHEN v.state='DONE' AND v.result_hash=c.result_hash THEN 1 ELSE 0 END),0) completed,
             coalesce(sum(CASE WHEN v.state='DEFERRED' THEN 1 ELSE 0 END),0) deferred
             FROM comparisons c LEFT JOIN reviews v ON v.revision=(SELECT max(revision)
             FROM reviews WHERE run_id=c.run_id AND sample_id=c.sample_id)
             WHERE c.run_id=:run""",
             run=run_id,
+            low=run_requires_low_confidence(con, run_id),
         )
 
 
@@ -363,11 +385,13 @@ def select_auto_audit(project, run_id, count=30, seed="20260324"):
         validate_run(con, run)
         candidates = rows(
             con,
-            """SELECT c.sample_id,c.signals FROM comparisons c
+            f"""SELECT c.sample_id,c.signals FROM comparisons c
             WHERE c.run_id=:run AND c.decision='AUTO_KEEP'
+            AND NOT {REQUIRED_SQL}
             AND NOT EXISTS(SELECT 1 FROM reviews v WHERE v.run_id=c.run_id AND v.sample_id=c.sample_id)
             AND NOT EXISTS(SELECT 1 FROM audit_samples a WHERE a.run_id=c.run_id AND a.sample_id=c.sample_id)""",
             run=run_id,
+            low=run_requires_low_confidence(con, run_id),
         )
         if not candidates:
             raise ValueError("미검수 자동 유지 항목이 없습니다.")

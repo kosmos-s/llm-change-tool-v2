@@ -252,6 +252,10 @@ class ResultPanel(QFrame):
                     else f"내보내기 보류 · 확인할 항목 {len(value.get('problems', [])):,}개"
                 )
                 level = "success" if value["passed"] else "warning"
+                counts = value.get("counts", {})
+                summary += f"\n사람 검수 완료 {counts.get('human_complete', 0):,} / {counts.get('total', 0):,}건 · Gate 통과는 전건 사람 검수나 정확도 향상을 뜻하지 않습니다."
+                if value.get("legacy_core_pilot"):
+                    summary += "\n이전 core 시험용 정책: 낮은 신뢰도만 있는 항목은 자동 유지될 수 있습니다."
                 reasons = {
                     "required human review unresolved": "필수 검수를 완료해 주세요.",
                     "deferred/draft/stale human review": "보류·초안 또는 이전 결과의 검수를 다시 확인해 주세요.",
