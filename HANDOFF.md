@@ -1,6 +1,18 @@
 # LLM Change Tool v2 — handoff
 Updated: 2026-10-15. Historical facts below were last verified on 2026-10-10. Inspect current main and open PRs before modifying.
 
+## Latest direction: proceed independently while company reply is pending
+User reports no company reply for about a week and authorizes proceeding with
+provisional internal criteria, revisable later. Company confirmation is NOT a
+prerequisite for internal development, offline inventory, sampling or human
+review. See docs/independent-experiment-plan.md: internal target scene F1 >=0.85
+(unmeasured/aspirational), val development up to 50 and separate test holdout up
+to 200, frozen by seed/fingerprint with quality/split guards. This is not a
+company target or paid-call authorization. Keep all actual predictions locally
+so changed aggregation criteria can be evaluated again. No paid API, company
+server, original edits, main merge or release. Actual model retraining still
+requires code/weights/environment; do not substitute Mock metrics for it.
+
 ## Current follow-up branch (2026-10-15, unreleased)
 Items 1–3 below were reproduced on main 0b63f14 and fixes are implemented on
 fix/handoff-review-and-budget. See docs/handoff-fixes-20261015.md for verification.
@@ -63,7 +75,9 @@ Official F1 vs F2 metric, positive class, evaluation data/performer;
 3,000-sample selection scope and split; meaning of FN/FP and filename suffixes;
 final development/delivery scope and timeline.
 Historical document mismatch: proposal F1 0.80→0.85; company PDF F2 0.80→0.85 and other F1 references. Verify source pages when files available.
-Do not start paid 3,000-sample production processing or declare final metric success before criteria are settled.
+Internal work proceeds under the provisional protocol above while these remain
+pending. Paid 3,000-sample processing still requires explicit direction; do not
+declare a company target achieved from internal or Mock results.
 
 ## References to provide locally
 - Company PDF and university proposal DOCX.
@@ -76,5 +90,6 @@ Reference files are not automatically transferred from ChatGPT to Codex.
 
 ## User checks after fixes
 Backup project. Process 10–20 samples end to end on Windows. Check real image judgment and exported labels manually.
-Only after company decisions: select 3,000, run, review, record counts/time/API costs and representative corrections.
+Proceed with internal inventory, sample selection, review and experiment records
+without waiting for company decisions. Paid production needs separate direction.
 
