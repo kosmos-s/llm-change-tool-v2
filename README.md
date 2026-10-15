@@ -83,6 +83,7 @@ python -m llm_change_tool --self-test
 테스트에서는 유료 API를 호출하지 않습니다. Ubuntu의 headless 검증은 `QT_QPA_PLATFORM=offscreen`을 사용합니다. Qt 오류가 나면 `libegl1`, `libopengl0` 설치 여부를 확인합니다. Windows 빌드는 `build_windows.bat`으로 실행합니다.
 
 - [사용 가이드](docs/user-guide.md)
+- [현재 상태와 파일 안내 · 2026-10-15](docs/briefing-20261015.md)
 - [아키텍처 / DB 구조](docs/architecture.md)
 - [개발 및 검증 보고서](docs/implementation-report.md)
 - [보안 / 비용 주의사항](SECURITY.md)
