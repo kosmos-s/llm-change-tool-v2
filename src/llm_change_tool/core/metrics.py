@@ -4,9 +4,42 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from llm_change_tool.core.labels import FIELDS, KEYS, canonical, digest, validate_labels
+from llm_change_tool.core.labels import (
+    FIELDS,
+    KEYS,
+    SCHEMA_HASH,
+    canonical,
+    digest,
+    validate_labels,
+)
 from llm_change_tool.core.projects import now
+from llm_change_tool.core.reviews import REQUIRED_SQL, run_requires_low_confidence
 from llm_change_tool.storage.store import execute, one, rows, transaction
+
+EVALUATION_POLICY = "scene-f1-v1"
+PRIMARY_LABELS = tuple(f["key"] for f in FIELDS if not f.get("parent") and "fixed" not in f)
+
+
+def scene_change(labels):
+    values = [labels[key] for key in PRIMARY_LABELS]
+    if any(type(value) is not int or value not in (0, 1) for value in values):
+        raise ValueError("Scene evaluation requires resolved binary primary labels")
+    return int(any(values))
+
+
+def scene_metrics(truth, predictions):
+    ids = sorted(set(truth) & set(predictions))
+    if not ids:
+        return None
+    counts = binary_metrics(
+        [scene_change(truth[s]) for s in ids], [scene_change(predictions[s]) for s in ids]
+    )
+    return {
+        **counts,
+        "aggregation": "scene_binary",
+        "labels": list(PRIMARY_LABELS),
+        "defined": bool(counts["tp"] + counts["fp"] + counts["fn"]),
+    }
 
 
 def binary_metrics(truth, prediction):
@@ -32,7 +65,7 @@ def binary_metrics(truth, prediction):
 
 def overall_metrics(metrics):
     """Micro average independent top-level labels, excluding children/fixed labels."""
-    keys = [field["key"] for field in FIELDS if not field.get("parent") and "fixed" not in field]
+    keys = list(PRIMARY_LABELS)
     if not all(key in metrics for key in keys):
         return None
     counts = {key: sum(metrics[label][key] for label in keys) for key in ("tp", "fp", "fn", "tn")}
@@ -60,11 +93,14 @@ def label_metrics(truth, predictions):
         else {}
     )
     return {
+        "evaluation_policy": EVALUATION_POLICY,
+        "primary_metric": "scene.f1",
         "coverage": len(ids) / len(truth) if truth else 0,
         "matched": len(ids),
         "reference": len(truth),
         "metrics": scores,
         "overall": overall_metrics(scores),
+        "scene": scene_metrics(truth, predictions),
     }
 
 
@@ -74,6 +110,7 @@ def dashboard(project, run_id=None):
         if not run_id:
             return result
         job = one(con, "SELECT * FROM jobs WHERE run_id=:run", run=run_id)
+        run = one(con, "SELECT config FROM llm_runs WHERE id=:run", run=run_id)
         counts = {
             r["state"]: r["n"]
             for r in rows(
@@ -99,9 +136,14 @@ def dashboard(project, run_id=None):
                 job=job["id"],
             )
         )
-        comps = rows(con, "SELECT * FROM comparisons WHERE run_id=:run", run=run_id)
+        comps = rows(
+            con,
+            f"SELECT c.*,{REQUIRED_SQL} effective_required FROM comparisons c WHERE run_id=:run",
+            run=run_id,
+            low=run_requires_low_confidence(con, run_id),
+        )
         result.update(
-            compare_complete=len(comps), review_required=sum(c["required"] for c in comps)
+            compare_complete=len(comps), review_required=sum(c["effective_required"] for c in comps)
         )
         values = rows(
             con,
@@ -122,7 +164,11 @@ def dashboard(project, run_id=None):
         result["modified"] = sum(
             json.loads(v["labels"]) != json.loads(v["original_labels"]) for v in done
         )
-        auto = {c["sample_id"] for c in comps if c["decision"] == "AUTO_KEEP"}
+        auto = {
+            c["sample_id"]
+            for c in comps
+            if c["decision"] == "AUTO_KEEP" and not c["effective_required"]
+        }
         result["original_kept"] = (
             len(done) - result["modified"] + sum(v["id"] in auto and not v["state"] for v in values)
         )
@@ -136,7 +182,11 @@ def dashboard(project, run_id=None):
         truth = {v["id"]: json.loads(v["labels"]) for v in done}
         predictions = {v["id"]: json.loads(v["prediction"])["labels"] for v in paired}
         result["VLM_vs_human"] = label_metrics(truth, predictions)
-        result["VLM_vs_human"].update(partial_review=True, selected_total=len(values))
+        result["VLM_vs_human"].update(
+            partial_review=True,
+            selected_total=len(values),
+            provider=json.loads(run["config"])["provider"],
+        )
         return result
 
 
@@ -269,7 +319,7 @@ def model_evaluation(project, golden_id, name, predictions):
     if not name.strip():
         raise ValueError("Model name required")
     with transaction(project) as con:
-        one(con, "SELECT * FROM golden_sets WHERE id=:id", id=golden_id)
+        golden = one(con, "SELECT * FROM golden_sets WHERE id=:id", id=golden_id)
         truth = {
             r["sample_id"]: json.loads(r["labels"])
             for r in rows(con, "SELECT * FROM golden_items WHERE set_id=:id", id=golden_id)
@@ -287,12 +337,28 @@ def model_evaluation(project, golden_id, name, predictions):
             "name": name,
             "kind": "change_detection_model",
             "golden_id": golden_id,
+            "golden_fingerprint": golden["fingerprint"],
+            "truth_hash": digest(truth),
+            "schema_hash": SCHEMA_HASH,
+            "scene_cases": [
+                dict(
+                    sample_id=sid,
+                    truth=scene_change(truth[sid]),
+                    prediction=scene_change(predictions[sid]),
+                    outcome=("TP" if scene_change(predictions[sid]) else "FN")
+                    if scene_change(truth[sid])
+                    else ("FP" if scene_change(predictions[sid]) else "TN"),
+                )
+                for sid in sorted(truth)
+            ],
             **label_metrics(truth, predictions),
         }
+        evaluation_id = str(uuid4())
+        report["evaluation_id"] = evaluation_id
         execute(
             con,
             "INSERT INTO model_evaluations VALUES (:id,:name,:gold,:payload,:time)",
-            id=str(uuid4()),
+            id=evaluation_id,
             name=name,
             gold=golden_id,
             payload=canonical(report),
@@ -303,12 +369,30 @@ def model_evaluation(project, golden_id, name, predictions):
 
 def export_golden_template(project, golden_id):
     with transaction(project, readonly=True) as con:
+        golden = one(con, "SELECT * FROM golden_sets WHERE id=:id", id=golden_id)
         items = rows(con, "SELECT * FROM golden_items WHERE set_id=:id", id=golden_id)
         if not items:
             raise ValueError("Golden set not found")
+        inputs = {
+            row["id"]: {
+                "logical_key": row["logical_key"],
+                "split": row["split"],
+                "images": {k: v for k, v in json.loads(row["paths"]).items() if k != "json"},
+            }
+            for row in rows(
+                con,
+                "SELECT s.id,s.logical_key,s.split,s.paths FROM samples s JOIN golden_items g ON g.sample_id=s.id WHERE g.set_id=:id",
+                id=golden_id,
+            )
+        }
         template = {
+            "format": "llm-change-model-predictions-v2",
+            "prediction_status": "template",
             "golden_id": golden_id,
-            "predictions": {i["sample_id"]: dict.fromkeys(KEYS, 0) for i in items},
+            "golden_fingerprint": golden["fingerprint"],
+            "evaluation_policy": EVALUATION_POLICY,
+            "inputs": inputs,
+            "predictions": {i["sample_id"]: dict.fromkeys(KEYS, None) for i in items},
         }
     path = project.root / "exports" / f"model_predictions_{uuid4().hex}.json"
     path.parent.mkdir(exist_ok=True)
@@ -316,7 +400,7 @@ def export_golden_template(project, golden_id):
         stream.write(canonical(template))
     return {
         "path": str(path),
-        "note": "Replace zero placeholders with actual model predictions before evaluation.",
+        "note": "예측 양식입니다. 모든 null을 실제 모델의 0/1 예측으로 채우고 prediction_status를 complete로 바꾸세요. 정답을 복사해 넣지 마세요.",
     }
 
 
@@ -326,15 +410,26 @@ def import_model_predictions(project, path: Path, name):
     if path.stat().st_size > 20_000_000:
         raise ValueError("Prediction file too large")
     data, _ = strict_json(path.read_bytes())
+    if data.get("format") == "llm-change-model-predictions-v2":
+        if data.get("prediction_status") != "complete":
+            raise ValueError("Prediction template is not complete")
+        if data.get("evaluation_policy") != EVALUATION_POLICY:
+            raise ValueError("Evaluation policy mismatch")
+        with transaction(project, readonly=True) as con:
+            golden = one(con, "SELECT * FROM golden_sets WHERE id=:id", id=data["golden_id"])
+        if data.get("golden_fingerprint") != golden["fingerprint"]:
+            raise ValueError("Golden fingerprint mismatch")
     return model_evaluation(project, data["golden_id"], name, data["predictions"])
 
 
 def model_comparison(project):
     with transaction(project, readonly=True) as con:
-        return [
-            json.loads(r["payload"])
-            for r in rows(con, "SELECT * FROM model_evaluations ORDER BY created_at")
-        ]
+        reports = []
+        for row in rows(con, "SELECT * FROM model_evaluations ORDER BY created_at,id"):
+            report = json.loads(row["payload"])
+            report["evaluation_id"] = row["id"]
+            reports.append(report)
+        return reports
 
 
 def review_report(project, run_id):

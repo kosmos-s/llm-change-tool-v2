@@ -8,6 +8,8 @@ def classify_failure(exc=None, *, code=None, phase="provider"):
         code = str(exc) if isinstance(exc, ProviderFailure) else type(exc).__name__
     if phase == "images":
         return "data", code, False, False
+    if phase == "reservation":
+        return "configuration", "unverified_cost_estimate", False, True
     if code in ("http_400", "http_401", "http_403", "http_404", "http_422", "insufficient_quota"):
         return "configuration", code, False, True
     if code in ("interrupted_unknown_outcome", "missing_token_usage"):

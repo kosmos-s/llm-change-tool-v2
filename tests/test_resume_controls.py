@@ -1,5 +1,7 @@
 import pytest
+from PIL import Image
 
+from llm_change_tool.core.costs import request_cost_reserve, request_input_reserve
 from llm_change_tool.core.jobs import (
     RunConfig,
     control_job,
@@ -8,6 +10,7 @@ from llm_change_tool.core.jobs import (
     run_job,
     update_budget,
 )
+from llm_change_tool.core.labels import prompt_text
 from llm_change_tool.core.plans import create_plan
 from llm_change_tool.providers.base import ProviderResponse
 from llm_change_tool.providers.mock import MockProvider
@@ -22,8 +25,9 @@ def test_budget_increase_resumes_only_remaining_samples(imported):
         output_price=1,
         input_token_reserve=1000,
         max_output_tokens=100,
-        cost_limit=0.0022,
     )
+    per_item = request_cost_reserve([Image.new("RGB", (64, 64))] * 2, prompt_text(), cfg)
+    cfg.cost_limit = 2 * per_item
     job = create_job(project, create_plan(project), cfg)
 
     class Metered:
@@ -31,20 +35,27 @@ def test_budget_increase_resumes_only_remaining_samples(imported):
 
         def predict(self, *args):
             self.calls += 1
-            return ProviderResponse(MockProvider().predict(*args).raw, 1000, 100)
+            images, prompt, config = args
+            return ProviderResponse(
+                MockProvider().predict(*args).raw,
+                request_input_reserve(images, prompt, config),
+                config.max_output_tokens,
+            )
 
     provider = Metered()
     initial = run_job(project, job, provider=provider)
     assert initial["state"] == "PAUSED" and initial["counts"]["COMPLETED"] == 2
     with transaction(project) as con:
         frozen = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=initial["run_id"])
-    update_budget(project, job, 0.01, expected_limit=0.0022, reason="나머지 4건 처리")
+    update_budget(
+        project, job, 10 * per_item, expected_limit=cfg.cost_limit, reason="나머지 4건 처리"
+    )
     with pytest.raises(ValueError, match="변경되었습니다"):
-        update_budget(project, job, 0.02, expected_limit=0.0022, reason="stale")
+        update_budget(project, job, 20 * per_item, expected_limit=cfg.cost_limit, reason="stale")
     result = run_job(project, job, provider=provider)
     assert result["state"] == "COMPLETED" and result["counts"]["COMPLETED"] == 6
     assert result["run_id"] == initial["run_id"] and provider.calls == 6
-    assert result["cost_limit"] == 0.01
+    assert result["cost_limit"] == 10 * per_item
     with transaction(project) as con:
         assert one(con, "SELECT * FROM llm_runs WHERE id=:id", id=initial["run_id"]) == frozen
         assert len(rows(con, "SELECT * FROM attempts")) == 6

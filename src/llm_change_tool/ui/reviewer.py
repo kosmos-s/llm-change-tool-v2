@@ -216,6 +216,10 @@ class ReviewWidget(QWidget):
         self.ai_reason.setMaximumHeight(64)
         pl.addWidget(self.ai_reason)
         pl.addWidget(self.labels)
+        self.other_detail = text_label("", "muted")
+        self.other_detail.setAccessibleName("최종 기타 설명")
+        self.other_detail.setMaximumHeight(55)
+        pl.addWidget(self.other_detail)
         notes = QWidget()
         note_layout = QVBoxLayout(notes)
         note_layout.setContentsMargins(0, 0, 0, 0)
@@ -468,6 +472,7 @@ class ReviewWidget(QWidget):
     def changed(self, *args, invalidate_english=True):
         if self.loading:
             return
+        self.update_other_detail()
         self.track_effort()
         if invalidate_english:
             self.reason_en.blockSignals(True)
@@ -516,6 +521,7 @@ class ReviewWidget(QWidget):
             self.ai_details.clear()
             self.label_heading.setText("최종 라벨 확정")
             self.reason.clear()
+            self.other_detail.clear()
             self.reason_en.clear()
             for box in self.boxes.values():
                 box.setChecked(False)
@@ -579,6 +585,7 @@ class ReviewWidget(QWidget):
             english = sample["reviewed_reason_en"] or ""
         self.reason_en.setText(english if isinstance(english, str) else "")
         reason_text = prediction["reason"] if prediction else "AI 결과 없음"
+        self.update_other_detail()
         self.ai_reason.setText(
             "AI 근거 · " + (reason_text[:110] + "…" if len(reason_text) > 110 else reason_text)
         )
@@ -770,6 +777,26 @@ class ReviewWidget(QWidget):
             else Qt.CheckState.Checked
             if value
             else Qt.CheckState.Unchecked
+        )
+
+    def update_other_detail(self):
+        if not self.items:
+            self.other_detail.clear()
+            return
+        sample = self.items[self.index]
+        if "_other_description" not in sample:
+            doc, _ = strict_json(sample["original_raw"])
+            detail = doc.get("artifact_detail")
+            sample["_other_description"] = (
+                detail.get("arti_other_detail", "") if isinstance(detail, dict) else ""
+            )
+        description = sample["_other_description"]
+        active = self.boxes["arti_other"].isChecked()
+        self.other_detail.setToolTip(str(description) if active and description else "")
+        self.other_detail.setText(
+            f"기타 설명 · {description}"
+            if active and description
+            else "기타 설명 · 없음 (기타 해제 시 이전 설명을 내보내지 않습니다.)"
         )
 
     def save(self, state="DONE", advance=False, *, asynchronous=False, on_saved=None):

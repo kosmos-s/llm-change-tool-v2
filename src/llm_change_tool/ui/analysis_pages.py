@@ -13,6 +13,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from llm_change_tool.core.evaluation import (
+    export_comparison_report,
+    load_model_evaluation,
+    verify_manual_counts,
+)
 from llm_change_tool.core.exchange import (
     conflicts,
     export_reviews,
@@ -123,7 +128,7 @@ def add_pages(window):
     layout.addWidget(frame)
     frame, content = card(
         "변화탐지 모델 평가",
-        "Baseline과 재학습 모델의 예측 파일을 각각 가져와 Precision · Recall · F1 · F2를 비교합니다.",
+        "내부 대표 지표는 변화 유무 F1입니다. 같은 고정 정답의 실제 예측을 비교하고 오류 사례를 사람이 확인합니다. 재학습 실행은 외부 코드에서 수행합니다.",
     )
     bar = QHBoxLayout()
     window.button("1  예측 양식 받기", lambda: golden_action(window, "template"), bar)
@@ -133,6 +138,10 @@ def add_pages(window):
         lambda: window.background(lambda p: model_comparison(window.project)),
         bar,
     )
+    content.addLayout(bar)
+    bar = QHBoxLayout()
+    window.button("4  전후 비교 · 보고서 저장", lambda: paired_comparison(window), bar)
+    window.button("5  수동 집계 대조", lambda: manual_count_check(window), bar)
     content.addLayout(bar)
     layout.addWidget(frame)
     window.tabs.addTab(scroll_page(stats), "통계 · 평가")
@@ -264,3 +273,58 @@ def model_import(window):
             lambda p: import_model_predictions(window.project, Path(path), name),
             lambda v: display(window, v),
         )
+
+
+def _choose_evaluation(window, title, exclude=None):
+    if not window.project:
+        return None
+    with transaction(window.project, readonly=True) as con:
+        evaluations = rows(
+            con,
+            "SELECT e.id,e.name,g.name golden_name FROM model_evaluations e JOIN golden_sets g ON g.id=e.golden_id ORDER BY e.created_at,e.id",
+        )
+    evaluations = [e for e in evaluations if e["id"] != exclude]
+    if not evaluations:
+        window._error(ValueError("먼저 같은 고정 정답에 대한 실제 모델 예측을 가져오세요."))
+        return None
+    choices = [f"{e['name']} · {e['golden_name']} · {e['id']}" for e in evaluations]
+    selected, ok = QInputDialog.getItem(window, title, "평가 결과", choices, 0, False)
+    return evaluations[choices.index(selected)]["id"] if ok else None
+
+
+def paired_comparison(window):
+    baseline = _choose_evaluation(window, "기존 모델 선택")
+    if not baseline:
+        return
+    candidate = _choose_evaluation(window, "재학습 모델 선택", exclude=baseline)
+    if candidate:
+        window.background(
+            lambda p: export_comparison_report(window.project, baseline, candidate),
+            lambda v: display(window, v),
+        )
+
+
+def manual_count_check(window):
+    evaluation_id = _choose_evaluation(window, "수동 집계를 대조할 모델")
+    if not evaluation_id:
+        return
+    text, ok = QInputDialog.getText(
+        window, "수동 집계 대조", "CSV와 영상을 확인한 TP,FP,FN,TN을 쉼표로 입력하세요."
+    )
+    if not ok:
+        return
+    try:
+        values = [int(value.strip()) for value in text.split(",")]
+        if len(values) != 4:
+            raise ValueError("TP,FP,FN,TN 네 개의 정수를 입력하세요.")
+        counts = dict(zip(("tp", "fp", "fn", "tn"), values, strict=True))
+    except ValueError:
+        window._error(ValueError("TP,FP,FN,TN 네 개의 0 이상 정수를 입력하세요."))
+        return
+    window.background(
+        lambda p: {
+            "kind": "manual_count_check",
+            **verify_manual_counts(load_model_evaluation(window.project, evaluation_id), counts),
+        },
+        lambda v: display(window, v),
+    )

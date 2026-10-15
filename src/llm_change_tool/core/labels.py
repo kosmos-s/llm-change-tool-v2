@@ -146,6 +146,12 @@ def effective_doc(raw: bytes, labels: dict, reason: str, reason_en: str | None =
             if isinstance(old, bool)
             else (value if type(old) is int else ("o" if value else "x"))
         )
+    # Descriptions belong to the active other label, not to the source snapshot.
+    # Preserve the key/shape and unknown metadata; never mutate original bytes.
+    if not labels["arti_other"]:
+        detail = doc.get("artifact_detail", {})
+        if "arti_other_detail" in detail:
+            detail["arti_other_detail"] = ""
     doc["reason_ko"] = korean
     # Never silently attach the source's English explanation to a different decision.
     if reason_en is not None or explanation_changed:
