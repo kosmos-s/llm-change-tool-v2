@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from llm_change_tool.core.datasets import safe_path, sample_images
 from llm_change_tool.core.labels import FIELDS, effective_doc, strict_json
 from llm_change_tool.core.reviews import (
+    BLIND_ORIGIN,
     review_history,
     review_queue,
     review_summary,
@@ -119,6 +120,12 @@ class ReviewWidget(QWidget):
         )
         self.auto.setChecked(True)
         top.addWidget(self.auto)
+        self.blind = QCheckBox("독립 판정")
+        self.blind.setToolTip(
+            "원본·AI 라벨과 근거를 숨기고 빈 판정에서 시작합니다. 사람 정답(Golden Set)을 만들 때 사용하세요."
+        )
+        self.blind.toggled.connect(self.toggle_blind)
+        top.addWidget(self.blind)
         top.addStretch()
         self.progress = text_label("항목 없음", "badge")
         top.addWidget(self.progress)
@@ -326,6 +333,8 @@ class ReviewWidget(QWidget):
                 "저장은 현재 1건의 완료이며 자동 저장은 초안입니다.\n\n"
                 "Ctrl+S 저장 · Ctrl+Enter 저장 후 다음\n"
                 "Alt+←/→ 이동 · Ctrl+Z 되돌리기 · Ctrl+F 항목 찾기 · F 화면 맞춤\n\n"
+                "독립 판정: 원본·AI 라벨을 숨기고 미확정에서 시작합니다. 모든 라벨과\n"
+                "판정 근거를 직접 입력해야 완료되며, 기록에 독립 판정으로 남습니다.\n\n"
                 "최신 기준: 도로 표식은 0. 일반 촬영조건 차이는 제외합니다.\n"
                 "건물 기울임·수목 계절 변화·농경지 생육 단계는 지침의 예외를 확인하세요.\n"
                 "면적 기준: 9분할 한 칸의 인공물 1/2, 수목·산림·농경지 1/4.\n"
@@ -367,6 +376,23 @@ class ReviewWidget(QWidget):
     def position_key(self):
         return f"review/{self.project.project_id}/{self.run_id}/{self.filter.currentData()}"
 
+    def blind_key(self):
+        return f"review/{self.project.project_id}/blind"
+
+    def toggle_blind(self, enabled):
+        # Unsaved edits were made under the other mode; saving them now would
+        # misrecord their provenance.
+        if self.pending_save or self.dirty or (self.task and self.task.isRunning()):
+            self.blind.blockSignals(True)
+            self.blind.setChecked(not enabled)
+            self.blind.blockSignals(False)
+            self.status.setText("수정 중인 항목을 저장한 뒤 독립 판정 모드를 바꾸세요.")
+            return
+        if self.project:
+            self.settings.setValue(self.blind_key(), enabled)
+        self.update_summary()
+        self.load_current()
+
     def remember_position(self):
         if self.project and self.run_id and self.items:
             self.settings.setValue(self.position_key(), self.items[self.index]["id"])
@@ -383,6 +409,11 @@ class ReviewWidget(QWidget):
         self.run_id = run_id
         self.items = []
         self.index = 0
+        self.blind.blockSignals(True)
+        self.blind.setChecked(
+            bool(project) and self.settings.value(self.blind_key(), False, type=bool)
+        )
+        self.blind.blockSignals(False)
         if project and run_id:
             self.reload()
         else:
@@ -417,14 +448,19 @@ class ReviewWidget(QWidget):
         counts = (
             review_summary(self.project, self.run_id)
             if self.project and self.run_id
-            else dict.fromkeys(("total", "required_remaining", "completed", "deferred"), 0)
+            else dict.fromkeys(
+                ("total", "required_remaining", "completed", "deferred", "blind_completed"), 0
+            )
         )
-        self.summary.setText(
-            f"전체 {counts['total']:,} · 필수 검수 남음 {counts['required_remaining']:,} · 완료 {counts['completed']:,} · 보류 {counts['deferred']:,}"
-        )
+        text = f"전체 {counts['total']:,} · 필수 검수 남음 {counts['required_remaining']:,} · 완료 {counts['completed']:,} · 보류 {counts['deferred']:,}"
+        if self.blind.isChecked() or counts["blind_completed"]:
+            text += f" · 독립 판정 완료 {counts['blind_completed']:,}"
+        self.summary.setText(text)
 
     def apply_labels(self, source):
         if not self.items or self.loaded_sample_id != self.items[self.index]["id"]:
+            return
+        if source != "manual" and self.blind.isChecked():
             return
         if source == "manual":
             self.labels.setFocus()
@@ -472,6 +508,10 @@ class ReviewWidget(QWidget):
     def changed(self, *args, invalidate_english=True):
         if self.loading:
             return
+        # A decided label becomes a plain change/no-change toggle again.
+        for box in self.boxes.values():
+            if box.isTristate() and box.checkState() != Qt.CheckState.PartiallyChecked:
+                box.setTristate(False)
         self.update_other_detail()
         self.track_effort()
         if invalidate_english:
@@ -542,10 +582,19 @@ class ReviewWidget(QWidget):
         )
         original = json.loads(sample["original_labels"])
         prediction = json.loads(sample["prediction"]) if sample["prediction"] else None
-        final = json.loads(sample["reviewed_labels"]) if sample["reviewed_labels"] else original
+        blind = self.blind.isChecked()
+        # Blind review starts undecided; only the reviewer's own blind revisions
+        # are shown, never drafts that were seeded from source or AI labels.
+        own_blind = bool(sample["review_state"]) and sample["review_origin"] == BLIND_ORIGIN
+        if blind:
+            final = json.loads(sample["reviewed_labels"]) if own_blind else dict.fromkeys(original)
+        else:
+            final = json.loads(sample["reviewed_labels"]) if sample["reviewed_labels"] else original
         for i, f in enumerate(FIELDS):
             different = (
-                prediction is not None and original[f["key"]] != prediction["labels"][f["key"]]
+                not blind
+                and prediction is not None
+                and original[f["key"]] != prediction["labels"][f["key"]]
             )
             self.labels.item(i, 0).setBackground(QColor("#fff2d5" if different else "#ffffff"))
             for col, value in [
@@ -553,46 +602,67 @@ class ReviewWidget(QWidget):
                 (2, prediction["labels"][f["key"]] if prediction else None),
             ]:
                 item = QTableWidgetItem(
-                    "변화" if value else "없음" if value is not None else "미확정"
+                    "숨김"
+                    if blind
+                    else "변화"
+                    if value
+                    else "없음"
+                    if value is not None
+                    else "미확정"
                 )
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor("#126b65" if value else "#6b7b86"))
+                item.setForeground(QColor("#126b65" if value and not blind else "#6b7b86"))
                 if different:
                     item.setBackground(QColor("#fff2d5"))
                 self.labels.setItem(i, col, item)
             self.set_label_value(f, final[f["key"]])
         self.label_heading.setText(
-            f"최종 라벨 · AI 신뢰도 {prediction['confidence']:.0%}"
+            "최종 라벨 · 독립 판정 (원본·AI 숨김)"
+            if blind
+            else f"최종 라벨 · AI 신뢰도 {prediction['confidence']:.0%}"
             if prediction
             else "최종 라벨 · AI 결과 없음"
         )
         original_doc, _ = strict_json(sample["original_raw"])
-        self.reason.setPlainText(
-            sample["reviewed_reason"]
-            if sample["review_state"]
-            else original_doc.get("reason_ko", "")
-        )
-        # Read the effective explanation so legacy reviews cannot display stale English.
-        try:
-            doc = effective_doc(
-                sample["original_raw"],
-                final,
-                self.reason.toPlainText(),
-                sample["reviewed_reason_en"],
+        if blind:
+            self.reason.setPlainText(sample["reviewed_reason"] if own_blind else "")
+            english = (sample["reviewed_reason_en"] if own_blind else "") or ""
+        else:
+            self.reason.setPlainText(
+                sample["reviewed_reason"]
+                if sample["review_state"]
+                else original_doc.get("reason_ko", "")
             )
-            english = doc.get("reason", "")
-        except ValueError:
-            english = sample["reviewed_reason_en"] or ""
+            # Read the effective explanation so legacy reviews cannot display stale English.
+            try:
+                doc = effective_doc(
+                    sample["original_raw"],
+                    final,
+                    self.reason.toPlainText(),
+                    sample["reviewed_reason_en"],
+                )
+                english = doc.get("reason", "")
+            except ValueError:
+                english = sample["reviewed_reason_en"] or ""
         self.reason_en.setText(english if isinstance(english, str) else "")
-        reason_text = prediction["reason"] if prediction else "AI 결과 없음"
+        reason_text = (
+            "독립 판정 중에는 숨깁니다."
+            if blind
+            else prediction["reason"]
+            if prediction
+            else "AI 결과 없음"
+        )
         self.update_other_detail()
         self.ai_reason.setText(
             "AI 근거 · " + (reason_text[:110] + "…" if len(reason_text) > 110 else reason_text)
         )
-        self.ai_details.setText(reason_text)
-        self.ai_details.setToolTip(reason_text)
-        self.ai_reason.setToolTip(prediction["reason"] if prediction else "AI 결과 없음")
-        flags = json.loads(sample["signals"])
+        self.ai_details.setText("" if blind else reason_text)
+        self.ai_details.setToolTip("" if blind else reason_text)
+        self.ai_reason.setToolTip("" if blind else reason_text)
+        if blind:
+            self.notes.toggle.setChecked(True)
+        # Comparison signals (mismatch, source issues) would reveal hidden labels.
+        flags = [] if blind else json.loads(sample["signals"])
         self.signals.setText(
             "확인할 내용 · " + "  /  ".join(SIGNALS.get(flag, flag) for flag in flags)
         )
@@ -685,8 +755,11 @@ class ReviewWidget(QWidget):
         self.labels.setEnabled(ready)
         self.reason.setEnabled(ready)
         self.reason_en.setEnabled(ready)
-        self.original_button.setEnabled(ready)
-        self.ai_button.setEnabled(ready and bool(self.items[self.index]["prediction"]))
+        blind = self.blind.isChecked()
+        self.original_button.setEnabled(ready and not blind)
+        self.ai_button.setEnabled(
+            ready and not blind and bool(self.items[self.index]["prediction"])
+        )
         self.edit_button.setEnabled(ready)
         self.diff.setEnabled(ready)
         self.flicker.setEnabled(ready)
@@ -783,6 +856,10 @@ class ReviewWidget(QWidget):
         if not self.items:
             self.other_detail.clear()
             return
+        if self.blind.isChecked():
+            self.other_detail.setToolTip("")
+            self.other_detail.setText("기타 설명 · 독립 판정 중에는 원본 설명을 숨깁니다.")
+            return
         sample = self.items[self.index]
         if "_other_description" not in sample:
             doc, _ = strict_json(sample["original_raw"])
@@ -817,6 +894,12 @@ class ReviewWidget(QWidget):
         ):
             self.decision_hint.setText("미확정 라벨을 변화/없음으로 선택한 뒤 저장하세요.")
             return False
+        blind = self.blind.isChecked()
+        if blind and state == "DONE" and not self.reason.toPlainText().strip():
+            self.decision_hint.setText("독립 판정은 판정 근거를 입력한 뒤 저장하세요.")
+            self.notes.toggle.setChecked(True)
+            self.reason.setFocus()
+            return False
         labels = {
             k: None if box.checkState() == Qt.CheckState.PartiallyChecked else int(box.isChecked())
             for k, box in self.boxes.items()
@@ -842,10 +925,13 @@ class ReviewWidget(QWidget):
                 previous,
                 reason_en=english,
                 elapsed_seconds=effort,
+                blind=blind,
             )
 
         def complete(revision):
             self.effort_seconds = 0.0
+            if revision != previous:
+                sample["review_origin"] = BLIND_ORIGIN if blind else "local"
             sample.update(
                 revision=revision,
                 reviewed_labels=json.dumps(labels),
@@ -932,6 +1018,12 @@ class ReviewWidget(QWidget):
                 self.timer.stop()
                 self.load_current()
                 return
+            if self.blind.isChecked():
+                # Undo can restore source-seeded labels into the hidden view.
+                self.status.setText(
+                    "독립 판정 모드에서는 저장 이력 되돌리기를 쓸 수 없습니다. 라벨을 직접 고쳐 다시 저장하세요."
+                )
+                return
             sample = self.items[self.index]
             undo_review(
                 self.project,
@@ -948,12 +1040,15 @@ class ReviewWidget(QWidget):
     def history(self):
         if self.items:
             history = review_history(self.project, self.run_id, self.items[self.index]["id"])
-            QMessageBox.information(
-                self,
-                "검수 이력",
-                "\n\n".join(
-                    f"r{r['revision']} · {r['state']} · {r['reviewer']} · {r['created_at']}\n{r['reason']}"
-                    for r in history
-                )
-                or "검수 이력 없음",
+            hidden = 0
+            if self.blind.isChecked():
+                # Earlier non-blind reasons may quote source or AI decisions.
+                hidden = sum(r["origin"] != BLIND_ORIGIN for r in history)
+                history = [r for r in history if r["origin"] == BLIND_ORIGIN]
+            text = "\n\n".join(
+                f"r{r['revision']} · {r['state']} · {r['reviewer']} · {r['created_at']}\n{r['reason']}"
+                for r in history
             )
+            if hidden:
+                text += ("\n\n" if text else "") + f"독립 판정 전 기록 {hidden}건은 숨겼습니다."
+            QMessageBox.information(self, "검수 이력", text or "검수 이력 없음")

@@ -24,6 +24,7 @@ ERRORS = {
 }
 
 MESSAGES = {
+    "Independent review requires a reason": "독립 판정은 원본 일치 여부와 관계없이 판정 근거를 입력해야 완료할 수 있습니다.",
     "Legacy evaluation has no scene predictions": "이전 평가는 변화 유무별 예측 기록이 없습니다. 실제 모델 예측 JSON을 다시 가져오세요.",
     "Evaluation reference changed": "평가 당시 고정한 정답과 현재 기록이 다릅니다. 원래 Golden Set을 확인하세요.",
     "Paired comparison requires complete": "같은 고정 정답의 모든 샘플에 대한 예측이 필요합니다.",

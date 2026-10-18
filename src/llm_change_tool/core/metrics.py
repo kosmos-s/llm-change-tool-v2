@@ -13,7 +13,11 @@ from llm_change_tool.core.labels import (
     validate_labels,
 )
 from llm_change_tool.core.projects import now
-from llm_change_tool.core.reviews import REQUIRED_SQL, run_requires_low_confidence
+from llm_change_tool.core.reviews import (
+    BLIND_ORIGIN,
+    REQUIRED_SQL,
+    run_requires_low_confidence,
+)
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 EVALUATION_POLICY = "scene-f1-v1"
@@ -243,6 +247,8 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
                 "items": [(v["sample_id"], v["labels"], v["revision"]) for v in values],
             }
         )
+        # Provenance only: blind status does not change the frozen fingerprint.
+        blind = sum(v["origin"] == BLIND_ORIGIN for v in values)
         gid = str(uuid4())
         execute(
             con,
@@ -263,6 +269,7 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
                 {
                     "dataset_fingerprint": dataset["fingerprint"],
                     "duplicate_check": purpose == "evaluation",
+                    "blind_reviews": blind,
                 }
             ),
         )
@@ -282,6 +289,8 @@ def create_golden(project, run_id, name, sample_ids=None, *, purpose="exploratio
             "fingerprint": fp,
             "purpose": purpose,
             "split": split,
+            "blind_reviews": blind,
+            "all_blind": blind == len(values),
         }
 
 

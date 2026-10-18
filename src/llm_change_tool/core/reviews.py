@@ -29,6 +29,8 @@ def low_confidence_required(config, mode):
 
 
 REQUIRED_SQL = "(c.required=1 OR (:low AND c.signals LIKE '%\"low_confidence\"%'))"
+# Revisions saved while source/AI labels were hidden from the reviewer.
+BLIND_ORIGIN = "blind"
 
 
 def run_requires_low_confidence(con, run_id):
@@ -157,6 +159,10 @@ def append_review(
     if reason_en is not None and (not isinstance(reason_en, str) or len(reason_en) > 10000):
         raise ValueError("영문 근거는 최대 10,000자입니다.")
     if state == "DONE":
+        # The source-change reason check would reveal hidden labels, so blind
+        # decisions always carry their own reason.
+        if origin == BLIND_ORIGIN and not reason.strip():
+            raise ValueError("Independent review requires a reason")
         sample = one(con, "SELECT original_raw FROM samples WHERE id=:id", id=sample_id)
         effective_doc(sample["original_raw"], labels, reason, reason_en)
     comparison = one(
@@ -172,8 +178,9 @@ def append_review(
     if not isinstance(elapsed_seconds, (int, float)) or not 0 <= elapsed_seconds <= 86400:
         raise ValueError("Invalid review duration")
     if (
-        origin == "local"
+        origin in ("local", BLIND_ORIGIN)
         and latest
+        and (origin == "local" or latest["origin"] == BLIND_ORIGIN)
         and all(
             (
                 latest["state"] == state,
@@ -233,6 +240,7 @@ def save_review(
     expected_revision=None,
     reason_en=None,
     elapsed_seconds=0,
+    blind=False,
 ):
     with transaction(project) as con:
         return append_review(
@@ -244,6 +252,7 @@ def save_review(
             reviewer,
             state,
             expected_revision,
+            BLIND_ORIGIN if blind else "local",
             reason_en=reason_en,
             elapsed_seconds=elapsed_seconds,
         )
@@ -344,7 +353,7 @@ def review_queue(project, run_id, filter_name="all"):
             con,
             f"""SELECT s.*,CASE WHEN {REQUIRED_SQL} THEN 1 ELSE 0 END required,c.signals,c.result_hash,r.prediction,
             v.state review_state,v.revision,v.labels reviewed_labels,v.reason reviewed_reason,v.reason_en reviewed_reason_en,v.reviewer,
-            coalesce(v.result_hash=c.result_hash,0) review_current
+            v.origin review_origin,coalesce(v.result_hash=c.result_hash,0) review_current
             FROM samples s JOIN comparisons c ON c.sample_id=s.id AND c.run_id=:run
             LEFT JOIN llm_results r ON r.sample_id=s.id AND r.run_id=:run
             LEFT JOIN reviews v ON v.revision=(SELECT max(revision) FROM reviews
@@ -364,12 +373,14 @@ def review_summary(project, run_id):
             f"""SELECT count(*) total,
             coalesce(sum(CASE WHEN {REQUIRED_SQL} AND NOT (coalesce(v.state,'')='DONE' AND coalesce(v.result_hash,'')=c.result_hash) THEN 1 ELSE 0 END),0) required_remaining,
             coalesce(sum(CASE WHEN v.state='DONE' AND v.result_hash=c.result_hash THEN 1 ELSE 0 END),0) completed,
-            coalesce(sum(CASE WHEN v.state='DEFERRED' THEN 1 ELSE 0 END),0) deferred
+            coalesce(sum(CASE WHEN v.state='DEFERRED' THEN 1 ELSE 0 END),0) deferred,
+            coalesce(sum(CASE WHEN v.state='DONE' AND v.result_hash=c.result_hash AND v.origin=:blind THEN 1 ELSE 0 END),0) blind_completed
             FROM comparisons c LEFT JOIN reviews v ON v.revision=(SELECT max(revision)
             FROM reviews WHERE run_id=c.run_id AND sample_id=c.sample_id)
             WHERE c.run_id=:run""",
             run=run_id,
             low=run_requires_low_confidence(con, run_id),
+            blind=BLIND_ORIGIN,
         )
 
 

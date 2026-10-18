@@ -67,6 +67,25 @@ UI는 `ui/`, DB는 `storage/`, 업무 로직은 `core/`, 호출은 `providers/`,
 Git clone만으로 로컬 자료는 전달되지 않습니다. 다른 PC라면 사용자가 허용한
 별도 경로로 자료·프로젝트를 전달해야 하며 Git에 넣어 전달하지 마세요.
 
+## 2026-10-18 Claude 진행 기록
+
+- 로컬 DB를 읽기 전용으로 재확인했습니다. 20건·50건 프로젝트 모두 DB 스키마 7, 사람 검수 완료 0,
+  초안만 있음(20/50)입니다. 초안 70건 전부가 **원본 라벨을 그대로 복사한 것**(reviewer
+  `offline workflow preparation`)이고, Golden Set·모델 평가는 0건입니다. 10-15 이후 변경은 없습니다.
+- 원본 라벨 쪽으로 판정이 쏠리는 것을 막기 위해 이미지 검수에 「독립 판정」 모드를 추가했습니다.
+  사용법은 [사용자 설명서](user-guide.md)에 있습니다.
+  - `core/reviews.py`: origin `blind`, 완료 시 근거 필수, `review_queue.review_origin`, `review_summary.blind_completed`.
+  - `core/metrics.py`: Golden 결과·메타데이터에 `blind_reviews` 기록(지문 불변).
+  - `ui/reviewer.py`: 원본·AI 열과 근거·신호 숨김, 미확정에서 시작, 되돌리기 차단, 이력 필터, 프로젝트별 설정 기억.
+  - 테스트: `tests/test_blind_review.py`. DB 마이그레이션은 추가하지 않았습니다.
+- AGENTS.md에 사용자에게 보이는 오류 메시지는 한국어로 작성한다는 규칙을 추가했습니다.
+- 로컬 `artifacts/` 정리: 일회성 스크립트는 `tools/`, 검증 결과·PR 초안은 `records/`,
+  캐시와 이전 안내 파일은 `archive/cleanup-20261018/`로 옮겼습니다. 색인은 `artifacts/README.md`에 있습니다.
+  프로젝트 DB가 데이터 폴더의 절대경로를 저장하므로 프로젝트 폴더, `local-reference/`, `dataset_sample/`은
+  옮기지 않았습니다. 삭제한 파일은 없습니다.
+- holdout test 200건 검수 프로젝트는 아직 만들지 않았습니다. val로 설정을 정하기 전에 test 정답 작업을 시작할지는
+  사용자 일정에 따라 결정하세요. 만들 경우 독립 판정 모드를 기본으로 사용합니다.
+
 ## 다음 작업 순서
 
 1. `git status`, 브랜치·HEAD, 하위 지침을 확인합니다. 위 로컬 안내와 최종 선정본을
