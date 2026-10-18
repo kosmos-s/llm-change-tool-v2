@@ -18,6 +18,7 @@ from llm_change_tool.core.reviews import (
     review_summary,
     save_review,
 )
+from llm_change_tool.storage.store import execute, transaction
 from llm_change_tool.ui.feedback import explain_error
 from llm_change_tool.ui.window import MainWindow
 
@@ -133,6 +134,10 @@ def test_blind_mode_hides_source_seeded_drafts_and_records_decision(imported):
     assert latest["origin"] == BLIND_ORIGIN and latest["state"] == "DONE"
     assert json.loads(latest["labels"]) == dict.fromkeys(KEYS, 0)
     assert "독립 판정 완료 1" in view.summary.text()
+    view.reviewer.setText("another tester")
+    assert view.reason.toPlainText() == ""
+    view.reviewer.setText("tester")
+    assert view.reason.toPlainText() == "T1/T2 비교 결과 변화 없음"
     view.undo()
     assert review_history(project, run, sample_id)[-1]["revision"] == latest["revision"]
     # The reviewer's own blind decision is shown again after reopening.
@@ -180,3 +185,94 @@ def test_blind_toggle_waits_for_unsaved_edits_and_is_remembered(imported):
     assert review_queue(project, run)[0]["review_state"] is None
     window.close()
     app.processEvents()
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_blind_reopens_only_current_reviewers_current_decision(imported, monkeypatch, stale):
+    app = QApplication.instance() or QApplication([])
+    project, _, run = ready(imported)
+    sample = review_queue(project, run)[0]
+    save_review(
+        project,
+        run,
+        sample["id"],
+        dict.fromkeys(KEYS, 0),
+        "다른 사람의 독립 근거",
+        "first",
+        blind=True,
+    )
+    if stale:
+        with transaction(project) as con:
+            execute(
+                con,
+                "UPDATE comparisons SET result_hash='changed' WHERE run_id=:run AND sample_id=:sid",
+                run=run,
+                sid=sample["id"],
+            )
+    window = MainWindow()
+    window.show()
+    try:
+        window.set_project(project)
+        view = window.review_widget
+        until(lambda: view.task and not view.task.isRunning())
+        view.reviewer.setText("first" if stale else "second")
+        view.blind.setChecked(True)
+        until(lambda: not view.task.isRunning())
+        app.processEvents()
+        assert view.reason.toPlainText() == ""
+        editable = [f["key"] for f in FIELDS if "fixed" not in f]
+        assert all(view.boxes[k].checkState() == Qt.CheckState.PartiallyChecked for k in editable)
+        messages = []
+        monkeypatch.setattr(
+            "llm_change_tool.ui.reviewer.QMessageBox.information",
+            lambda *args: messages.append(args[-1]),
+        )
+        view.history()
+        assert "다른 사람의 독립 근거" not in messages[-1]
+        if not stale:
+            view.reviewer.setText("first")
+            assert view.reason.toPlainText() == "다른 사람의 독립 근거"
+            view.reviewer.setText("second")
+            assert view.reason.toPlainText() == ""
+            view.auto.setChecked(False)
+            view.reason.setPlainText("작성 중인 근거")
+            view.reviewer.setText("first")
+            assert view.reviewer.text() == "second"
+            assert view.reason.toPlainText() == "작성 중인 근거"
+            assert "저장한 뒤" in view.status.text()
+            view.dirty = False
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_blind_unnamed_reviewer_can_enter_name_after_judging(imported):
+    app = QApplication.instance() or QApplication([])
+    project, _, run = ready(imported)
+    window = MainWindow()
+    window.show()
+    try:
+        window.set_project(project)
+        view = window.review_widget
+        until(lambda: view.task and not view.task.isRunning())
+        view.reviewer.clear()
+        view.blind.setChecked(True)
+        until(lambda: not view.task.isRunning())
+        app.processEvents()
+        view.auto.setChecked(False)
+        for field in FIELDS:
+            if "fixed" not in field:
+                view.boxes[field["key"]].setCheckState(Qt.CheckState.Unchecked)
+        view.reason.setPlainText("영상으로 먼저 판정한 근거")
+        for name in ("t", "te", "tester"):
+            view.reviewer.setText(name)
+            assert view.reviewer.text() == name
+            assert view.reason.toPlainText() == "영상으로 먼저 판정한 근거"
+        assert view.save()
+        sample = view.items[view.index]
+        latest = review_history(project, run, sample["id"])[-1]
+        assert latest["reviewer"] == "tester" and latest["origin"] == BLIND_ORIGIN
+    finally:
+        view.dirty = False
+        window.close()
+        app.processEvents()

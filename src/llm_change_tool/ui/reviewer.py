@@ -72,6 +72,8 @@ class ReviewWidget(QWidget):
         self.index = 0
         self.dirty = False
         self.loading = False
+        self.review_identity = ""
+        self.edit_reviewer = None
         self.task = None
         self.images = None
         self.loaded_sample_id = None
@@ -107,6 +109,8 @@ class ReviewWidget(QWidget):
         )
         if self.remember_name.isChecked():
             self.reviewer.setText(self.settings.value("reviewer_name", ""))
+        self.review_identity = self.reviewer.text()
+        self.reviewer.textChanged.connect(self.reviewer_changed)
         self.reviewer.textChanged.connect(self.remember_reviewer)
         self.remember_name.toggled.connect(self.remember_reviewer)
         top.addWidget(self.reviewer)
@@ -373,6 +377,46 @@ class ReviewWidget(QWidget):
         self.settings.setValue("remember_reviewer", remember)
         self.settings.setValue("reviewer_name", self.reviewer.text().strip() if remember else "")
 
+    def own_blind_review(self, sample):
+        return bool(
+            sample["review_state"]
+            and sample["review_current"]
+            and sample["review_origin"] == BLIND_ORIGIN
+            and self.reviewer.text().strip()
+            and sample["reviewer"] == self.reviewer.text().strip()
+        )
+
+    def reviewer_changed(self, name):
+        if self.loading or not self.blind.isChecked():
+            self.review_identity = name
+            return
+        if self.dirty or self.pending_save:
+            if self.dirty and not self.pending_save and not self.edit_reviewer:
+                # An unnamed reviewer may enter their name after judging the
+                # image. Keep these edits instead of restoring another form.
+                self.review_identity = name
+                return
+            self.reviewer.blockSignals(True)
+            self.reviewer.setText(self.review_identity)
+            self.reviewer.blockSignals(False)
+            self.status.setText("수정 중인 항목을 저장한 뒤 검수자 이름을 바꾸세요.")
+            return
+        self.review_identity = name
+        if not self.items:
+            return
+        sample = self.items[self.index]
+        own_blind = self.own_blind_review(sample)
+        final = json.loads(sample["reviewed_labels"]) if own_blind else {}
+        self.loading = True
+        try:
+            for field in FIELDS:
+                self.set_label_value(field, final.get(field["key"]))
+            self.reason.setPlainText(sample["reviewed_reason"] if own_blind else "")
+            self.reason_en.setText((sample["reviewed_reason_en"] if own_blind else "") or "")
+        finally:
+            self.loading = False
+        self.decision_hint.setText("라벨 선택 후 ‘저장’으로 확정하세요.")
+
     def position_key(self):
         return f"review/{self.project.project_id}/{self.run_id}/{self.filter.currentData()}"
 
@@ -518,6 +562,8 @@ class ReviewWidget(QWidget):
             self.reason_en.blockSignals(True)
             self.reason_en.clear()
             self.reason_en.blockSignals(False)
+        if not self.dirty:
+            self.edit_reviewer = self.reviewer.text().strip()
         self.dirty = True
         self.decision_hint.setText("수정 중 · ‘저장’을 눌러 확정하세요.")
         if self.auto.isChecked():
@@ -585,7 +631,7 @@ class ReviewWidget(QWidget):
         blind = self.blind.isChecked()
         # Blind review starts undecided; only the reviewer's own blind revisions
         # are shown, never drafts that were seeded from source or AI labels.
-        own_blind = bool(sample["review_state"]) and sample["review_origin"] == BLIND_ORIGIN
+        own_blind = self.own_blind_review(sample)
         if blind:
             final = json.loads(sample["reviewed_labels"]) if own_blind else dict.fromkeys(original)
         else:
@@ -938,6 +984,8 @@ class ReviewWidget(QWidget):
                 reviewed_reason=reason,
                 reviewed_reason_en=english,
                 review_state=state,
+                reviewer=reviewer.strip(),
+                review_current=True,
             )
             self.pending_save = False
             self.setEnabled(True)
@@ -1043,12 +1091,23 @@ class ReviewWidget(QWidget):
             hidden = 0
             if self.blind.isChecked():
                 # Earlier non-blind reasons may quote source or AI decisions.
-                hidden = sum(r["origin"] != BLIND_ORIGIN for r in history)
-                history = [r for r in history if r["origin"] == BLIND_ORIGIN]
+                sample = self.items[self.index]
+                visible = [
+                    r
+                    for r in history
+                    if r["origin"] == BLIND_ORIGIN
+                    and self.reviewer.text().strip()
+                    and r["reviewer"] == self.reviewer.text().strip()
+                    and r["result_hash"] == sample["result_hash"]
+                ]
+                hidden = len(history) - len(visible)
+                history = visible
             text = "\n\n".join(
                 f"r{r['revision']} · {r['state']} · {r['reviewer']} · {r['created_at']}\n{r['reason']}"
                 for r in history
             )
             if hidden:
-                text += ("\n\n" if text else "") + f"독립 판정 전 기록 {hidden}건은 숨겼습니다."
+                text += (
+                    "\n\n" if text else ""
+                ) + f"현재 검수자의 최신 결과에 해당하지 않는 기록 {hidden}건은 숨겼습니다."
             QMessageBox.information(self, "검수 이력", text or "검수 이력 없음")
