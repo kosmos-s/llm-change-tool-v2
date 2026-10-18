@@ -1,4 +1,9 @@
 # LLM Change Tool v2 — handoff
+Claude continuation (2026-10-18): read CLAUDE.md and docs/claude-handoff.md.
+Local inventory and final development/holdout selection artifacts already exist;
+check their current state before repeating preparation. See the continuation note
+for local paths, historical verification limits and the next human-review steps.
+
 Updated: 2026-10-15. Historical facts below were last verified on 2026-10-10. Inspect current main and open PRs before modifying.
 
 ## Latest direction: proceed independently while company reply is pending
