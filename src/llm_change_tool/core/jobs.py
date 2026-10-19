@@ -1,6 +1,7 @@
 """Persistent sequential job queue with crash-safe reservations and frozen provenance."""
 
 import hashlib
+import json
 import math
 import time
 from typing import Literal
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from llm_change_tool.core.costs import request_cost_reserve
 from llm_change_tool.core.datasets import sample_images, verify_sources
 from llm_change_tool.core.failures import classify_failure
 from llm_change_tool.core.labels import SCHEMA_HASH, Prediction, canonical, digest, prompt_text
@@ -32,7 +34,9 @@ class RunConfig(BaseModel):
     output_price: float = Field(default=0, ge=0, le=1000)
     cost_limit: float = Field(default=5, gt=0, le=1000)
     confidence_threshold: float = Field(default=0.7, ge=0, le=1)
-    review_policy: Literal["core", "detailed"] = "core"
+    review_policy: Literal["core", "detailed"] = "detailed"
+    image_detail: Literal["low", "high", "auto"] = "high"
+    image_token_override: int | None = Field(default=None, ge=1, le=2000000)
 
     @model_validator(mode="after")
     def prices(self):
@@ -40,12 +44,12 @@ class RunConfig(BaseModel):
             raise ValueError("Enter current USD prices per 1M tokens for the selected model")
         return self
 
-    def reserve(self):
+    def reserve(self, input_tokens=None):
         return (
             0.0
             if self.provider == "mock"
             else (
-                self.input_token_reserve * self.input_price
+                max(self.input_token_reserve, input_tokens or 0) * self.input_price
                 + self.max_output_tokens * self.output_price
             )
             / 1_000_000
@@ -107,7 +111,9 @@ def create_job(project, plan_id, config: RunConfig, prompt=None):
 def validate_run(con, run):
     config = RunConfig.model_validate_json(run["config"])
     if (
-        digest({"config": config.model_dump(), "prompt": run["prompt"], "schema": SCHEMA_HASH})
+        digest(
+            {"config": json.loads(run["config"]), "prompt": run["prompt"], "schema": SCHEMA_HASH}
+        )
         != run["config_hash"]
         or run["schema_hash"] != SCHEMA_HASH
     ):
@@ -141,6 +147,7 @@ def job_info(project, job_id):
         config = RunConfig.model_validate_json(run["config"])
         job["provider"], job["model"] = config.provider, config.model
         job["cost_limit"] = budget_limit(con, job_id, config.cost_limit)
+        job["image_token_override"] = reservation_override(con, job_id, config.image_token_override)
         job["failures"] = rows(
             con,
             """SELECT i.error,f.domain,f.retryable,count(*) count FROM job_items i
@@ -189,6 +196,55 @@ def budget_limit(con, job_id, initial_limit):
         id=job_id,
     )
     return changes[0]["new_limit"] if changes else initial_limit
+
+
+def reservation_override(con, job_id, initial_tokens):
+    changes = rows(
+        con,
+        "SELECT image_tokens FROM job_reservation_events WHERE job_id=:id ORDER BY id DESC LIMIT 1",
+        id=job_id,
+    )
+    return changes[0]["image_tokens"] if changes else initial_tokens
+
+
+def update_image_reservation(project, job_id, tokens, *, expected_tokens, reason):
+    if tokens is not None and (type(tokens) is not int or not 1 <= tokens <= 2000000):
+        raise ValueError("Image reservation must be 1..2000000 tokens or automatic")
+    if not reason.strip() or len(reason) > 1000:
+        raise ValueError("Reservation change reason is required (max 1000 chars)")
+    with worker_lock(project), transaction(project) as con:
+        job = one(con, "SELECT * FROM jobs WHERE id=:id", id=job_id)
+        if job["state"] in ("RUNNING", "COMPLETED", "CANCELLED"):
+            raise ValueError("Pause the job before changing its image reservation")
+        run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=job["run_id"])
+        config = validate_run(con, run)
+        if config.provider != "openai":
+            raise ValueError("Mock jobs do not require a paid reservation")
+        current = reservation_override(con, job_id, config.image_token_override)
+        if current != expected_tokens:
+            raise ValueError("Image reservation changed; reload before saving")
+        if current != tokens:
+            execute(
+                con,
+                "INSERT INTO job_reservation_events(job_id,image_tokens,reason,created_at) VALUES (:job,:tokens,:reason,:t)",
+                job=job_id,
+                tokens=tokens,
+                reason=reason.strip(),
+                t=now(),
+            )
+            # No remote call was made for this local preflight error. Only those
+            # failed items may return to pending; all other failure rules stay.
+            execute(
+                con,
+                "UPDATE job_items SET state='PENDING',error='' WHERE job_id=:job AND state='FAILED' AND error='unverified_cost_estimate'",
+                job=job_id,
+            )
+            execute(
+                con,
+                "UPDATE jobs SET message='Image reservation updated; resume analysis' WHERE id=:id",
+                id=job_id,
+            )
+    return job_info(project, job_id)
 
 
 def update_budget(project, job_id, new_limit, *, expected_limit, reason):
@@ -345,6 +401,9 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
             run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=job["run_id"])
             config = validate_run(con, run)
             config.cost_limit = budget_limit(con, job_id, config.cost_limit)
+            config.image_token_override = reservation_override(
+                con, job_id, config.image_token_override
+            )
             if job["state"] in ("COMPLETED", "CANCELLED"):
                 return {"state": job["state"]}
         with transaction(project) as con:
@@ -391,34 +450,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                         )
                         break
                     sample = pending[0]
-                    spent = execute(
-                        con,
-                        "SELECT coalesce(sum(charged_cost + CASE WHEN state IN ('RUNNING','UNKNOWN') THEN reserved_cost ELSE 0 END),0) FROM attempts WHERE job_id=:id",
-                        id=job_id,
-                    ).scalar()
-                    if spent + config.reserve() > config.cost_limit + 1e-9:
-                        execute(
-                            con,
-                            "UPDATE jobs SET state='PAUSED',message='Estimated cost limit reached',owner=NULL WHERE id=:id",
-                            id=job_id,
-                        )
-                        break
-                    aid = str(uuid4())
-                    execute(
-                        con,
-                        "INSERT INTO attempts(id,job_id,sample_id,state,reserved_cost,created_at) VALUES (:id,:job,:sid,'RUNNING',:cost,:t)",
-                        id=aid,
-                        job=job_id,
-                        sid=sample["id"],
-                        cost=config.reserve(),
-                        t=now(),
-                    )
-                    execute(
-                        con,
-                        "UPDATE job_items SET state='RUNNING',attempts=attempts+1 WHERE job_id=:job AND sample_id=:sid",
-                        job=job_id,
-                        sid=sample["id"],
-                    )
+                aid = None
                 response = None
                 phase = "images"
                 image_seconds = provider_seconds = 0.0
@@ -426,6 +458,40 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                 try:
                     images = sample_images(project, sample)
                     image_seconds = time.perf_counter() - started
+                    phase = "reservation"
+                    reserved_cost = request_cost_reserve(images, run["prompt"], config)
+                    with transaction(project) as con:
+                        current = one(con, "SELECT state FROM jobs WHERE id=:id", id=job_id)
+                        if current["state"] != "RUNNING":
+                            break
+                        spent = execute(
+                            con,
+                            "SELECT coalesce(sum(charged_cost + CASE WHEN state IN ('RUNNING','UNKNOWN') THEN reserved_cost ELSE 0 END),0) FROM attempts WHERE job_id=:id",
+                            id=job_id,
+                        ).scalar()
+                        if spent + reserved_cost > config.cost_limit + 1e-9:
+                            execute(
+                                con,
+                                "UPDATE jobs SET state='PAUSED',message='Estimated cost limit reached',owner=NULL WHERE id=:id",
+                                id=job_id,
+                            )
+                            break
+                        aid = str(uuid4())
+                        execute(
+                            con,
+                            "INSERT INTO attempts(id,job_id,sample_id,state,reserved_cost,created_at) VALUES (:id,:job,:sid,'RUNNING',:cost,:t)",
+                            id=aid,
+                            job=job_id,
+                            sid=sample["id"],
+                            cost=reserved_cost,
+                            t=now(),
+                        )
+                        execute(
+                            con,
+                            "UPDATE job_items SET state='RUNNING',attempts=attempts+1 WHERE job_id=:job AND sample_id=:sid",
+                            job=job_id,
+                            sid=sample["id"],
+                        )
                     phase = "provider"
                     started = time.perf_counter()
                     response = provider.predict(images, run["prompt"], config)
@@ -466,7 +532,7 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                             job=job_id,
                             sid=sample["id"],
                         )
-                        if cost > config.reserve() and config.provider == "openai":
+                        if cost > reserved_cost and config.provider == "openai":
                             execute(
                                 con,
                                 "UPDATE jobs SET state='PAUSED',message='Actual usage exceeded reserve; inspect pricing/reserve' WHERE id=:id",
@@ -493,6 +559,22 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                     )
                     retry = retry and domain == "transient"
                     with transaction(project) as con:
+                        if aid is None:
+                            aid = str(uuid4())
+                            execute(
+                                con,
+                                "INSERT INTO attempts(id,job_id,sample_id,state,reserved_cost,created_at) VALUES (:id,:job,:sid,'RUNNING',0,:t)",
+                                id=aid,
+                                job=job_id,
+                                sid=sample["id"],
+                                t=now(),
+                            )
+                            execute(
+                                con,
+                                "UPDATE job_items SET attempts=attempts+1 WHERE job_id=:job AND sample_id=:sid",
+                                job=job_id,
+                                sid=sample["id"],
+                            )
                         attempt_diagnostics(con, aid, response, image_seconds, provider_seconds)
                         # Unknown remote outcomes reserve full estimated cost; never erase on retry.
                         if response:
@@ -513,7 +595,13 @@ def run_job(project, job_id, api_key="", provider=None, progress=lambda value: N
                                 ot=response.output_tokens,
                                 id=aid,
                             )
-                        elif phase == "images" or domain == "configuration":
+                            if cost > reserved_cost and config.provider == "openai":
+                                execute(
+                                    con,
+                                    "UPDATE jobs SET state='PAUSED',message='Actual usage exceeded reserve; inspect pricing/reserve' WHERE id=:id",
+                                    id=job_id,
+                                )
+                        elif phase in ("images", "reservation") or domain == "configuration":
                             execute(
                                 con,
                                 "UPDATE attempts SET state='FAILED',reserved_cost=0 WHERE id=:id",

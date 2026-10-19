@@ -2,7 +2,7 @@
 
 Local-first Windows 데스크톱 항공영상 변화탐지 학습데이터 검수 도구입니다.
 
-**이 브랜치의 버전은 0.1.10입니다.** 최신 배포 릴리스와 버전이 다를 수 있습니다. 아래 소스 실행과 [변경 이력](CHANGELOG.md)을 확인하세요. 기존 프로젝트는 자동 백업 후 스키마 6으로 전환하며, 검수·AI 결과·원본 데이터는 보존합니다. 전환 후 구버전 앱으로 프로젝트를 열지 마세요.
+**기준 배포 버전은 0.1.10이며 이 브랜치에는 미배포 수정이 포함됩니다.** 아래 소스 실행과 [변경 이력](CHANGELOG.md)을 확인하세요. 기존 프로젝트는 자동 백업 후 스키마 7로 전환하며, 검수·AI 결과·원본 데이터는 보존합니다. 전환 후 구버전 앱으로 프로젝트를 열지 마세요.
 
 ## 바로 실행
 
@@ -13,13 +13,13 @@ Windows Portable은 [최신 GitHub Release](https://github.com/kosmos-s/llm-chan
 ```powershell
 git clone https://github.com/kosmos-s/llm-change-tool-v2.git
 cd ./llm-change-tool-v2
-# 0.1.10 검토 브랜치 실행 (병합 전)
-git switch feat/review-ux-and-overall-f1
 ```
 
 최초 한 번 `setup.bat`, 이후 `run.bat`으로 시작합니다. 첫 설치에 인터넷이 필요합니다. Mock 검수 흐름에는 API 키가 필요하지 않습니다.
 
 ## 작업 순서
+
+회사 회신을 기다리는 동안에도 [내부 실험 계획 v1](docs/independent-experiment-plan.md)에 따라 데이터 점검·표본 선정·사람 검수·평가 준비를 진행합니다. 내부 목표와 회사의 공식 기준은 구분하고 실제 예측·정답을 보존해 나중에 재평가합니다.
 
 1. **프로젝트**: 새 프로젝트를 로컬 디스크에 생성합니다.
 2. **데이터 · AI 분석**: `train/val/test`를 포함하는 데이터 루트를 Import합니다. 차단·보류·제외와 선정 가능 수량을 확인합니다. 원본 변경이나 무결성 오류는 해결해야 하며, 후보 정책에서 제외된 샘플이 있다고 안전한 후보 전체가 차단되지는 않습니다.
@@ -29,6 +29,12 @@ git switch feat/review-ux-and-overall-f1
 6. **품질 · 내보내기**: Final Gate 통과 후 JPG/JSON을 내보냅니다. 시험용 출력은 manifest에 `pilot`, 본작업 출력은 `production`으로 구분됩니다.
 7. 팀 검수 결과는 **팀 검수 · 복원**에서 ZIP으로 교환하고 충돌을 해결합니다.
 8. **평가 · 고급 기능 → 통계 · 모델 평가**에서 작업 현황, GPT↔Human 지표, Golden Dataset, Baseline/Retrained 모델 평가를 확인합니다.
+
+새 작업은 낮은 신뢰도도 필수 검수합니다. 이전 `core` 시험용 정책은 낮은 신뢰도만으로 검수를 요구하지 않지만 본작업은 기존 작업도 필수 검수합니다. Gate 통과와 전건 사람 검수 완료는 다르며 화면과 manifest에 사람 검수 건수를 표시합니다.
+
+API 예약액은 실제 이미지 크기·모델·detail·프롬프트·응답 스키마·출력 예약으로 계산합니다. 이미지 토큰 규칙을 확인하지 못한 모델은 직접 추정치를 지정하기 전에는 호출하지 않습니다. 기존 작업은 「선택 작업 이미지 예약 변경」으로 설정하고 이어갈 수 있습니다. [수정 내용과 검증 범위](docs/handoff-fixes-20261015.md)를 참고하세요.
+
+제공 파일 전체를 후보로 사용할 수 있으며 영문 사유는 선택입니다. 내부 대표 지표는 **변화 유무 F1**, 보조 지표는 기존 주요 라벨 micro F1로 정했습니다. 같은 고정 정답으로 기존·재학습 모델의 실제 예측을 비교하고 자동 보고서와 수동 검토 CSV를 저장합니다. [평가 기준·자동/수동 실행 순서](docs/evaluation-policy.md)를 확인하세요. 공식 지표·목표, 평가 데이터·주체, 최종 3,000건 선정·제출 범위와 일정은 회사 확인이 필요합니다. 위 본작업 절차는 기능 설명이며 유료 본처리 승인을 뜻하지 않습니다.
 
 처음부터 시험할 데이터가 없다면:
 
@@ -58,7 +64,7 @@ git switch feat/review-ux-and-overall-f1
 | 검수 | 원본/AI/최종 라벨, 근거·신뢰도, 필터, 동기화 확대/이동, fit/100%, 차이 영상·깜박임, 임시 저장, Undo, 이력 |
 | Export | 계획 고정, Final Gate, 원본 호환 JSON, 이미지, manifest |
 | 팀 | ZIP manifest/해시 검증, NEW/SAME/CONFLICT, 명시적 충돌 해결 |
-| 평가 | DB 통계, 종합 micro F1/F2·라벨별 Precision/Recall/F1/F2, Golden 기준 Run 비교, 별도 모델 평가 |
+| 평가 | 대표 변화 유무 F1, 보조 micro·라벨별 점수, Golden 기준 Run 비교, 기존·재학습 전후 비교 JSON/수동 검토 CSV·수동 집계 대조·CLI |
 | 배포 | PyInstaller portable, Linux/Windows 테스트, Windows GitHub Release |
 
 ## 검증 / 개발
@@ -79,6 +85,8 @@ python -m llm_change_tool --self-test
 테스트에서는 유료 API를 호출하지 않습니다. Ubuntu의 headless 검증은 `QT_QPA_PLATFORM=offscreen`을 사용합니다. Qt 오류가 나면 `libegl1`, `libopengl0` 설치 여부를 확인합니다. Windows 빌드는 `build_windows.bat`으로 실행합니다.
 
 - [사용 가이드](docs/user-guide.md)
+- [현재 상태와 파일 안내 · 2026-10-15](docs/briefing-20261015.md)
+- [평가 기준·실행 순서](docs/evaluation-policy.md) · [추가 검증·실제 표본의 한계](docs/evaluation-verification-20261015.md)
 - [아키텍처 / DB 구조](docs/architecture.md)
 - [개발 및 검증 보고서](docs/implementation-report.md)
 - [보안 / 비용 주의사항](SECURITY.md)

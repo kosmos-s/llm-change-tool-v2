@@ -36,11 +36,14 @@ def test_e2e_export_and_stale_gate(imported):
 
     output = Path(result["path"])
     assert len(list(output.rglob("*.jpg"))) == 6
-    manifest = json.loads((output / "manifest.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["production"] is False
     for p in root.rglob("*.json"):
-        exported = json.loads((output / p.relative_to(root)).read_text())
-        assert exported["unknown_metadata"] == json.loads(p.read_text())["unknown_metadata"]
+        exported = json.loads((output / p.relative_to(root)).read_text(encoding="utf-8"))
+        assert (
+            exported["unknown_metadata"]
+            == json.loads(p.read_text(encoding="utf-8"))["unknown_metadata"]
+        )
     s = review_queue(project, run)[0]
     save_review(
         project,

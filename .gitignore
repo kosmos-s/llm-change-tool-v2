@@ -32,6 +32,7 @@ exports/
 demo-data/
 
 artifacts/
+/local-reference/
 # Only these generated synthetic UI previews are versioned.
 !docs/ui/home.png
 !docs/ui/review.png

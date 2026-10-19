@@ -14,11 +14,18 @@ from llm_change_tool.core.datasets import (
     source_identities,
 )
 from llm_change_tool.core.jobs import validate_run
-from llm_change_tool.core.labels import canonical, digest, effective_doc, import_labels, strict_json
+from llm_change_tool.core.labels import (
+    Prediction,
+    canonical,
+    digest,
+    effective_doc,
+    import_labels,
+    strict_json,
+)
 from llm_change_tool.core.locking import worker_lock
 from llm_change_tool.core.plans import plan_uses_candidates
 from llm_change_tool.core.projects import now
-from llm_change_tool.core.reviews import latest_review, result_binding
+from llm_change_tool.core.reviews import latest_review, low_confidence_required, result_binding
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
@@ -164,7 +171,8 @@ def preparation_preview(project, run_id):
     identity_map = source_identities(project)
     with transaction(project, readonly=True) as con:
         run = one(con, "SELECT * FROM llm_runs WHERE id=:id", id=run_id)
-        validate_run(con, run)
+        config = validate_run(con, run)
+        mode = one(con, "SELECT mode FROM work_plans WHERE id=:id", id=run["plan_id"])["mode"]
         job = one(con, "SELECT * FROM jobs WHERE run_id=:run", run=run_id)
         if job["state"] == "RUNNING":
             raise ValueError("분석을 멈춘 뒤 준비하세요.")
@@ -204,13 +212,22 @@ def preparation_preview(project, run_id):
                 continue
             review = latest_review(con, run_id, sample["id"])
             issues = import_labels(strict_json(sample["original_raw"])[0])[1]
+            try:
+                prediction = Prediction.model_validate_json(sample["prediction"])
+            except ValueError:
+                problems.append(name + ": malformed output")
+                continue
+            required = sample["required"] or (
+                low_confidence_required(config, mode)
+                and prediction.confidence < config.confidence_threshold
+            )
             if review:
                 if review["state"] != "DONE" or review["result_hash"] != binding:
                     problems.append(name + ": 검수 미완료")
                     continue
                 labels = json.loads(review["labels"])
                 reason, english = review["reason"], review["reason_en"]
-            elif sample["required"] or sample["decision"] != "AUTO_KEEP" or issues:
+            elif required or sample["decision"] != "AUTO_KEEP" or issues:
                 problems.append(name + ": 필수 검수 미완료")
                 continue
             else:

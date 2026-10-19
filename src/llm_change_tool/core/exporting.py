@@ -19,7 +19,7 @@ from llm_change_tool.core.labels import (
 from llm_change_tool.core.locking import worker_lock
 from llm_change_tool.core.plans import plan_uses_candidates, validate_plan
 from llm_change_tool.core.projects import now
-from llm_change_tool.core.reviews import latest_review, result_binding
+from llm_change_tool.core.reviews import latest_review, low_confidence_required, result_binding
 from llm_change_tool.storage.store import execute, one, rows, transaction
 
 
@@ -69,7 +69,7 @@ def gate_in_transaction(con, run_id):
             problems.append(prefix + ": unresolved API error or missing success")
             continue
         try:
-            Prediction.model_validate_json(results[0]["prediction"])
+            prediction = Prediction.model_validate_json(results[0]["prediction"])
         except ValueError:
             problems.append(prefix + ": malformed output")
             continue
@@ -84,7 +84,11 @@ def gate_in_transaction(con, run_id):
             problems.append(prefix + ": stale comparison")
             continue
         review = latest_review(con, run_id, sid)
-        if comp["required"]:
+        required = comp["required"] or (
+            low_confidence_required(config, plan["mode"])
+            and prediction.confidence < config.confidence_threshold
+        )
+        if required:
             counts["review_required"] += 1
         if review:
             if review["state"] == "DEFERRED":
@@ -96,7 +100,7 @@ def gate_in_transaction(con, run_id):
             reason = review["reason"]
             counts["human_complete"] += 1
         elif (
-            comp["required"]
+            required
             or comp["decision"] != "AUTO_KEEP"
             or import_labels(strict_json(sample["original_raw"])[0])[1]
         ):
@@ -127,7 +131,16 @@ def gate_in_transaction(con, run_id):
     if conflicts:
         problems.append(f"Unresolved team conflicts: {conflicts}")
     return (
-        {"passed": not problems, "mode": plan["mode"], "problems": problems, "counts": counts},
+        {
+            "passed": not problems,
+            "mode": plan["mode"],
+            "problems": problems,
+            "counts": counts,
+            "review_policy": config.review_policy,
+            "all_human_reviewed": counts["human_complete"] == counts["total"],
+            "note": "Gate success does not mean all samples were reviewed by a human or that model accuracy improved.",
+            "legacy_core_pilot": config.review_policy == "core" and plan["mode"] != "production",
+        },
         effective,
         run,
         plan,

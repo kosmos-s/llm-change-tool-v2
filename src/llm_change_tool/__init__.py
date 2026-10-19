@@ -1,5 +1,5 @@
 """LLM Change Tool v2. Core modules do not import Qt."""
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
-BUILD_ID = "20261006-review-ux-overall-f1"
+BUILD_ID = "20261019-blind-review"
