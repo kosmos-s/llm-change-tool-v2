@@ -113,6 +113,10 @@ Codex 수정분을 검토해 찾은 문제를 고쳤습니다. DB 스키마·기
 - `tests/conftest.py`의 autouse fixture와 `scripts/capture_ui.py`가 실제 레지스트리
   (`HKCU\Software\KOSMOS\LLMChangeTool`) 대신 임시 INI 설정을 씁니다. 이전 테스트가 남긴
   위치 기록 키는 그대로 있습니다(이름 기억은 꺼져 있고 저장된 이름 없음을 확인).
+- 전체 pytest 171개 통과(테스트 전후 레지스트리 항목 수 동일), Ruff·포맷·compileall·비밀정보 검사,
+  self-test(network_calls=0), GUI smoke 통과.
+- 사용자가 10-19에 v0.1.11 릴리스를 요청했습니다. 버전을 올리고 PR #11을 main에 병합해
+  `release.yml`로 Windows 배포본을 만듭니다. 결과는 GitHub Releases에서 확인하세요.
 
 ## 다음 작업 순서
 
