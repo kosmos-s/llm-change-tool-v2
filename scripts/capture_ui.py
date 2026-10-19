@@ -9,10 +9,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image, ImageDraw
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QSettings, QTimer
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication
 
+import llm_change_tool.ui.reviewer as reviewer_ui
 from llm_change_tool.core.datasets import import_dataset
 from llm_change_tool.core.demo import generate_dataset
 from llm_change_tool.core.exporting import final_gate
@@ -108,6 +109,10 @@ def main():
                 "합성 UI 예시의 검수 메모",
                 "검수자 A",
             )
+        # Screenshots must not read or change the user's saved reviewer settings.
+        reviewer_ui.QSettings = lambda *args: QSettings(
+            str(root / "settings.ini"), QSettings.Format.IniFormat
+        )
         window = MainWindow()
         window.show()
         window.resize(1480, 960)

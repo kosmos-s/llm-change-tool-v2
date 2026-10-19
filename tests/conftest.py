@@ -38,6 +38,18 @@ def synthetic(root, count=6):
     return root
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    # Never read or change the user's saved reviewer name and positions (HKCU registry).
+    from PySide6.QtCore import QSettings
+
+    path = str(tmp_path / "settings.ini")
+    monkeypatch.setattr(
+        "llm_change_tool.ui.reviewer.QSettings",
+        lambda *args: QSettings(path, QSettings.Format.IniFormat),
+    )
+
+
 @pytest.fixture
 def imported(tmp_path):
     project = create_project(tmp_path / "project", "합성 검수")

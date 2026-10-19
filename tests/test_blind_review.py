@@ -4,8 +4,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 from test_desktop_flow import until
 from test_ui_ux import ready
 
@@ -35,6 +35,32 @@ def seed_source_drafts(project, run):
             "offline workflow preparation",
             "DRAFT",
         )
+
+
+def rename(view, name):
+    # Typing alone never switches the blind reviewer; a finished edit does.
+    view.reviewer.setText(name)
+    view.reviewer.editingFinished.emit()
+
+
+def open_blind(project, name, app):
+    window = MainWindow()
+    window.show()
+    window.set_project(project)
+    view = window.review_widget
+    until(lambda: view.task and not view.task.isRunning())
+    view.reviewer.setText(name)
+    view.blind.setChecked(True)
+    until(lambda: not view.task.isRunning())
+    app.processEvents()
+    return window, view
+
+
+def judge(view, reason):
+    for field in FIELDS:
+        if "fixed" not in field:
+            view.boxes[field["key"]].setCheckState(Qt.CheckState.Unchecked)
+    view.reason.setPlainText(reason)
 
 
 def test_blind_done_requires_reason_and_keeps_provenance(imported):
@@ -134,9 +160,9 @@ def test_blind_mode_hides_source_seeded_drafts_and_records_decision(imported):
     assert latest["origin"] == BLIND_ORIGIN and latest["state"] == "DONE"
     assert json.loads(latest["labels"]) == dict.fromkeys(KEYS, 0)
     assert "독립 판정 완료 1" in view.summary.text()
-    view.reviewer.setText("another tester")
+    rename(view, "another tester")
     assert view.reason.toPlainText() == ""
-    view.reviewer.setText("tester")
+    rename(view, "tester")
     assert view.reason.toPlainText() == "T1/T2 비교 결과 변화 없음"
     view.undo()
     assert review_history(project, run, sample_id)[-1]["revision"] == latest["revision"]
@@ -230,17 +256,19 @@ def test_blind_reopens_only_current_reviewers_current_decision(imported, monkeyp
         view.history()
         assert "다른 사람의 독립 근거" not in messages[-1]
         if not stale:
-            view.reviewer.setText("first")
+            rename(view, "first")
             assert view.reason.toPlainText() == "다른 사람의 독립 근거"
-            view.reviewer.setText("second")
+            rename(view, "second")
             assert view.reason.toPlainText() == ""
             view.auto.setChecked(False)
             view.reason.setPlainText("작성 중인 근거")
-            view.reviewer.setText("first")
+            rename(view, "first")
             assert view.reviewer.text() == "second"
             assert view.reason.toPlainText() == "작성 중인 근거"
             assert "저장한 뒤" in view.status.text()
-            view.dirty = False
+            # Discard through the user's path instead of forcing the state.
+            view.undo()
+            assert not view.dirty
     finally:
         window.close()
         app.processEvents()
@@ -272,7 +300,109 @@ def test_blind_unnamed_reviewer_can_enter_name_after_judging(imported):
         sample = view.items[view.index]
         latest = review_history(project, run, sample["id"])[-1]
         assert latest["reviewer"] == "tester" and latest["origin"] == BLIND_ORIGIN
+        assert not view.dirty
     finally:
-        view.dirty = False
+        window.close()
+        app.processEvents()
+
+
+def test_ui_tests_use_isolated_settings(imported):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        # conftest swaps the registry-backed settings for a per-test INI file.
+        assert window.review_widget.settings.format() == QSettings.Format.IniFormat
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_blind_save_over_another_reviewers_decision_needs_confirmation(imported, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    project, _, run = ready(imported)
+    sample = review_queue(project, run)[0]
+    first = save_review(
+        project, run, sample["id"], dict.fromkeys(KEYS, 0), "첫 검수자 근거", "first", blind=True
+    )
+    window, view = open_blind(project, "second", app)
+    try:
+        assert view.items[view.index]["id"] == sample["id"]
+        assert "다른 검수자" in view.progress.text()
+        assert "자동 임시 저장을 멈춥니다" in view.status.text()
+        judge(view, "두 번째 검수자 근거")
+        assert view.auto.isChecked() and view.dirty
+        view.autosave()
+        assert review_history(project, run, sample["id"])[-1]["revision"] == first
+        answers = []
+
+        def answer(choice):
+            def ask(*args):
+                answers.append(args[2])
+                return choice
+
+            return ask
+
+        monkeypatch.setattr(
+            "llm_change_tool.ui.reviewer.QMessageBox.question",
+            answer(QMessageBox.StandardButton.No),
+        )
+        assert not view.save()
+        assert "first" in answers[-1] and "Golden Set" in answers[-1]
+        assert review_history(project, run, sample["id"])[-1]["revision"] == first
+        assert view.dirty and "되돌리기" in view.status.text()
+        monkeypatch.setattr(
+            "llm_change_tool.ui.reviewer.QMessageBox.question",
+            answer(QMessageBox.StandardButton.Yes),
+        )
+        assert view.save()
+        assert len(answers) == 2
+        # The replaced decision stays in history; the Golden Set uses the latest one.
+        history = review_history(project, run, sample["id"])
+        assert [(r["reviewer"], r["origin"]) for r in history] == [
+            ("first", BLIND_ORIGIN),
+            ("second", BLIND_ORIGIN),
+        ]
+        golden = create_golden(project, run, "second")
+        assert golden["samples"] == 1 and golden["blind_reviews"] == 1
+        assert "다른 검수자" not in view.progress.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_blind_autosave_waits_for_a_finished_reviewer_name(imported):
+    app = QApplication.instance() or QApplication([])
+    project, _, run = ready(imported)
+    window, view = open_blind(project, "", app)
+    try:
+        sample_id = view.items[view.index]["id"]
+        assert view.auto.isChecked()
+        judge(view, "자동 저장 중 판정 근거")
+        assert view.timer.isActive()
+        for name in ("t", "te"):
+            view.reviewer.setText(name)
+            assert not view.timer.isActive()
+            # Even a timer that already fired must not save a partial name.
+            view.autosave()
+            assert review_history(project, run, sample_id) == []
+            assert view.reason.toPlainText() == "자동 저장 중 판정 근거"
+        rename(view, "tester")
+        assert view.timer.isActive()
+        view.autosave()
+        draft = review_history(project, run, sample_id)[-1]
+        assert draft["reviewer"] == "tester" and draft["state"] == "DRAFT"
+        assert draft["origin"] == BLIND_ORIGIN and not view.dirty
+        # Correcting the name after the draft: typing keeps the form, and the
+        # finished new name starts its own blank decision and effort count.
+        view.effort_seconds = 50.0
+        view.reviewer.setText("teste")
+        assert view.reason.toPlainText() == "자동 저장 중 판정 근거"
+        rename(view, "tester2")
+        assert view.reason.toPlainText() == ""
+        assert view.effort_seconds == 0.0
+        rename(view, "tester")
+        assert view.reason.toPlainText() == "자동 저장 중 판정 근거"
+        assert [r["reviewer"] for r in review_history(project, run, sample_id)] == ["tester"]
+    finally:
         window.close()
         app.processEvents()
