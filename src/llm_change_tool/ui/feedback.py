@@ -24,6 +24,20 @@ ERRORS = {
 }
 
 MESSAGES = {
+    "Dataset quality / insufficient unique candidates": "선정 가능한 고유 후보가 목표 수량보다 적습니다. ‘표본 미리보기’에서 split별 부족 수량과 보류 이유를 확인하고 목표를 줄이거나 데이터를 보완하세요.",
+    "Frozen GUI/worker diagnostic failed": "프로그램 자체 화면·작업 점검에 실패했습니다. 배포 ZIP을 새 폴더에 다시 풀어 실행하세요.",
+    "Incomplete self test export": "자체 점검의 내보내기 결과가 불완전합니다. 배포 ZIP을 새 폴더에 다시 풀어 실행하세요.",
+    "Image reservation changed; reload before saving": "다른 곳에서 이미지 예약 추정치가 바뀌었습니다. 작업 목록을 새로고침한 뒤 다시 저장하세요.",
+    "Image reservation must be": "이미지 1장 예약 추정치는 1~2,000,000 토큰으로 입력하거나 자동을 선택하세요.",
+    "Image token rules are unverified": "이 모델의 이미지 토큰 계산 규칙이 확인되지 않았습니다. ‘선택 작업 이미지 예약 변경’에서 이미지 1장 예약 추정치를 지정하세요. API는 호출하지 않았습니다.",
+    "Invalid image dimensions": "이미지 크기를 읽을 수 없습니다. 원본 이미지 파일이 손상되지 않았는지 확인하세요.",
+    "Unsupported image detail": "지원하지 않는 이미지 상세도(detail) 설정입니다. low, high, auto 중에서 선택하세요.",
+    "Mock jobs do not require a paid reservation": "모의(Mock) 작업에는 유료 예약이 필요하지 않습니다. 실제 AI 작업을 선택한 뒤 변경하세요.",
+    "Pause the job before changing its image reservation": "작업을 일시정지한 뒤 이미지 예약 추정치를 바꾸세요.",
+    "Reservation change reason is required": "예약 추정치를 바꾸는 이유를 1~1,000자로 입력하세요.",
+    "Scene evaluation is unavailable": "변화 유무 평가를 계산할 수 없습니다. 같은 Golden Set의 전체 예측을 다시 가져오세요.",
+    "Scene evaluation requires resolved binary primary labels": "변화 유무 평가에는 주요 라벨이 모두 0 또는 1로 확정되어야 합니다. 미확정 라벨이 있는 예측이나 정답을 확인하세요.",
+    "Source SHA256 changed": "가져온 뒤 원본 파일 내용이 바뀌었습니다. 원본을 되돌리거나 새 프로젝트에서 데이터를 다시 가져오세요.",
     "Independent review requires a reason": "독립 판정은 원본 일치 여부와 관계없이 판정 근거를 입력해야 완료할 수 있습니다.",
     "Legacy evaluation has no scene predictions": "이전 평가는 변화 유무별 예측 기록이 없습니다. 실제 모델 예측 JSON을 다시 가져오세요.",
     "Evaluation reference changed": "평가 당시 고정한 정답과 현재 기록이 다릅니다. 원래 Golden Set을 확인하세요.",
@@ -145,6 +159,8 @@ def explain_error(code):
         return "AI 서버 오류 · 잠시 후 실패 항목을 재시도하세요."
     if code in ERRORS:
         return ERRORS[code]
+    if re.fullmatch(r"http_4\d\d", code):
+        return f"AI 요청이 거부되었습니다({code}) · 모델 이름과 분석 설정을 확인한 뒤 실패 항목을 재시도하세요."
     for prefix, message in MESSAGES.items():
         if code.startswith(prefix):
             return message

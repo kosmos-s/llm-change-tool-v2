@@ -61,6 +61,7 @@ UI는 `ui/`, DB는 `storage/`, 업무 로직은 `core/`, 호출은 `providers/`,
 | 위 실험 폴더의 `ready-summary.json` | 준비 완료 상태 기록. 사람 정답·실제 예측·측정 성능과 구분 |
 | 위 실험 폴더의 `development-human-truth-blank.csv` | val 영상 판정 메모. CSV 수정은 앱 DB에 자동 반영되지 않음 |
 | 위 실험 폴더의 `holdout-human-truth-blank.csv` | 별도 test 정답 양식. 개발·프롬프트 조정에 사용 금지 |
+| 위 실험 폴더의 `holdout-project/` | test 200건 독립 판정용 Mock 프로젝트(2026-10-19 생성). 초안 0, 사람 검수 0. 입력은 `local-reference/.../holdout-input`, 결과 기록 `holdout-summary.json` |
 | `local-reference/` | 로컬 입력 복사본. Git 제외. 같은 이름의 실험 폴더 참조 |
 
 20건 프로젝트의 기존 기록은 완료 0건·초안 20건이며 Export Gate 차단입니다.
@@ -86,8 +87,10 @@ Git clone만으로 로컬 자료는 전달되지 않습니다. 다른 PC라면 �
   캐시와 이전 안내 파일은 `archive/cleanup-20261018/`로 옮겼습니다. 색인은 `artifacts/README.md`에 있습니다.
   프로젝트 DB가 데이터 폴더의 절대경로를 저장하므로 프로젝트 폴더, `local-reference/`, `dataset_sample/`은
   옮기지 않았습니다. 삭제한 파일은 없습니다.
-- holdout test 200건 검수 프로젝트는 아직 만들지 않았습니다. val로 설정을 정하기 전에 test 정답 작업을 시작할지는
-  사용자 일정에 따라 결정하세요. 만들 경우 독립 판정 모드를 기본으로 사용합니다.
+- (10-19 갱신) 사용자 요청으로 holdout test 200건 검수 프로젝트를 만들었습니다. 선정 파일 800개를 해시 확인 후
+  `local-reference/independent-experiment-v1-781dd78f/holdout-input`에 복사하고, Mock 분석·비교만 실행했습니다.
+  초안 0, 사람 검수 0, 유료 호출 0입니다. 독립 판정으로만 검수하고, 검수자는 한 사람입니다.
+  만든 스크립트는 로컬 `artifacts/tools/prepare_holdout_project.py`입니다(다시 실행하지 말 것).
 
 ## 2026-10-18 Codex 후속 수정
 
