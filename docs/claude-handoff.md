@@ -11,7 +11,10 @@
 4. [평가 정책](evaluation-policy.md), [평가 검증](evaluation-verification-20261015.md).
 5. [검수·비용 수정 기록](handoff-fixes-20261015.md), [아키텍처](architecture.md).
 
-## 이번에 확인한 저장소 상태
+> **2026-10-19 현재:** PR #11은 main에 병합됐고(`ce52d20`) v0.1.11이 배포됐습니다.
+> 아래 10-18 기록의 브랜치·PR·배포 상태는 그 시점 기준입니다. 새 작업은 최신 main에서 새 브랜치로 시작하세요.
+
+## 이번에 확인한 저장소 상태 (2026-10-18)
 
 - 경로: `C:\Users\rlarj\orca\workspaces\LLM-change-tool\https-github.com-kosmos-s-llm-change-tool-v2`
 - 브랜치: `fix/handoff-review-and-budget`.
@@ -115,8 +118,10 @@ Codex 수정분을 검토해 찾은 문제를 고쳤습니다. DB 스키마·기
   위치 기록 키는 그대로 있습니다(이름 기억은 꺼져 있고 저장된 이름 없음을 확인).
 - 전체 pytest 171개 통과(테스트 전후 레지스트리 항목 수 동일), Ruff·포맷·compileall·비밀정보 검사,
   self-test(network_calls=0), GUI smoke 통과.
-- 사용자가 10-19에 v0.1.11 릴리스를 요청했습니다. 버전을 올리고 PR #11을 main에 병합해
-  `release.yml`로 Windows 배포본을 만듭니다. 결과는 GitHub Releases에서 확인하세요.
+- 사용자가 10-19에 v0.1.11 릴리스를 요청했습니다. PR #11 CI(Windows/Linux, Portable 빌드)가 통과한 뒤
+  main에 병합했고(`ce52d20`), `release.yml`이 EXE 검사를 마치고 Portable ZIP과 SHA256을 공개했습니다.
+  https://github.com/kosmos-s/llm-change-tool-v2/releases/tag/v0.1.11
+  이 요청은 이번 릴리스에만 해당합니다. 이후 main 병합·릴리스는 다시 사용자 요청이 필요합니다.
 
 ## 다음 작업 순서
 
