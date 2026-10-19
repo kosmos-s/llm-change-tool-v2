@@ -1,6 +1,5 @@
-"""Team exchange, conflicts and model evaluation views."""
+"""Backup restore, statistics and model evaluation views."""
 
-import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,7 +7,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -17,12 +15,6 @@ from llm_change_tool.core.evaluation import (
     export_comparison_report,
     load_model_evaluation,
     verify_manual_counts,
-)
-from llm_change_tool.core.exchange import (
-    conflicts,
-    export_reviews,
-    import_reviews,
-    resolve_conflict,
 )
 from llm_change_tool.core.metrics import (
     create_golden,
@@ -44,32 +36,10 @@ def add_pages(window):
     layout = QVBoxLayout(team)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(18)
-    frame, content = card(
-        "검수 결과 주고받기",
-        "같은 데이터 · 작업 계획 · AI 결과를 사용하는 팀원과 검수 ZIP을 교환합니다.",
-    )
-    bar = QHBoxLayout()
-    window.button(
-        "검수 ZIP 내보내기",
-        lambda: window.background(lambda p: export_reviews(window.project, window.run_id)),
-        bar,
-        primary=True,
-        requires="run",
-    )
-    window.button("검수 ZIP 가져오기", lambda: choose_zip(window), bar, requires="run")
-    window.button("충돌 확인 · 해결", lambda: resolve_next(window), bar, requires="run")
-    bar.addStretch()
-    content.addLayout(bar)
-    content.addWidget(
-        text_label(
-            "새 결과는 반영하고, 동일한 결과는 유지합니다. 서로 다른 결정은 충돌로 표시하며 직접 선택해야 반영됩니다.",
-            "muted",
-        )
-    )
-    layout.addWidget(frame)
+    # Personal use: team ZIP exchange stays in core but is not offered on screen.
     frame, content = card(
         "백업에서 작업 이어가기",
-        "팀원에게 받은 DB 백업이나 내 백업을 새 프로젝트 폴더로 복원합니다.",
+        "내 DB 백업을 새 프로젝트 폴더로 복원합니다. PC를 옮길 때도 사용합니다.",
     )
     bar = QHBoxLayout()
     window.button("DB 백업 복원", lambda: restore(window), bar, requires=None)
@@ -77,15 +47,15 @@ def add_pages(window):
     content.addLayout(bar)
     content.addWidget(
         text_label(
-            "복원 후 ‘데이터 · AI 분석’에서 같은 데이터 폴더를 다시 선택하면 현재 PC의 경로로 연결됩니다. 검수 ZIP에는 이미지와 API Key가 포함되지 않습니다.",
+            "복원 후 ‘데이터 · AI 분석’에서 같은 데이터 폴더를 다시 선택하면 현재 PC의 경로로 연결됩니다. 백업에는 이미지와 API Key가 포함되지 않습니다.",
             "muted",
         )
     )
     layout.addWidget(frame)
-    window.team_result = ResultPanel("검수 ZIP 교환과 복원 결과가 여기에 표시됩니다.")
+    window.team_result = ResultPanel("복원 결과가 여기에 표시됩니다.")
     layout.addWidget(window.team_result)
     layout.addStretch()
-    window.tabs.addTab(scroll_page(team), "팀 작업 · 복원")
+    window.tabs.addTab(scroll_page(team), "백업 · 복원")
     stats = QWidget()
     layout = QVBoxLayout(stats)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -149,47 +119,6 @@ def add_pages(window):
 
 def display(window, value):
     window.analysis.set_result(value)
-
-
-def choose_zip(window):
-    path, _ = QFileDialog.getOpenFileName(window, "검수 패키지", "", "ZIP (*.zip)")
-    if path:
-        window.background(lambda p: import_reviews(window.project, window.run_id, Path(path)))
-
-
-def resolve_next(window):
-    if not window.project or not window.run_id:
-        return
-    values = conflicts(window.project, window.run_id)
-    if not values:
-        return QMessageBox.information(window, "충돌", "미해결 충돌이 없습니다.")
-    conflict = values[0]
-    incoming = json.loads(conflict["payload"])
-    current = conflict["current"]
-    from llm_change_tool.core.labels import FIELDS
-
-    def selected(labels):
-        if isinstance(labels, str):
-            labels = json.loads(labels)
-        return (
-            ", ".join(field["title"] for field in FIELDS if labels.get(field["key"]))
-            or "모든 라벨 변화 없음"
-        )
-
-    dialog = QMessageBox(window)
-    dialog.setWindowTitle(f"충돌 해결 · 남은 {len(values)}건")
-    dialog.setText(
-        f"샘플 {conflict['sample_id']}\n\n내 결과 ({current['reviewer']})\n{selected(current['labels'])}\n{current['reason']}\n\n가져온 결과 ({incoming['reviewer']})\n{selected(incoming['labels'])}\n{incoming['reason']}"
-    )
-    local = dialog.addButton("내 결과 유지", QMessageBox.ButtonRole.AcceptRole)
-    remote = dialog.addButton("가져온 결과 사용", QMessageBox.ButtonRole.DestructiveRole)
-    dialog.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
-    dialog.exec()
-    if dialog.clickedButton() in (local, remote):
-        choice = "local" if dialog.clickedButton() == local else "incoming"
-        window.background(
-            lambda p: resolve_conflict(window.project, conflict["id"], choice, current["revision"])
-        )
 
 
 def restore(window):

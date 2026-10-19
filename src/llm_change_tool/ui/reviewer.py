@@ -72,8 +72,6 @@ class ReviewWidget(QWidget):
         self.index = 0
         self.dirty = False
         self.loading = False
-        self.review_identity = ""
-        self.edit_reviewer = None
         self.task = None
         self.images = None
         self.loaded_sample_id = None
@@ -102,20 +100,11 @@ class ReviewWidget(QWidget):
         self.reviewer.setPlaceholderText("검수자 이름을 입력하세요")
         self.reviewer.setAccessibleName("검수자 이름")
         self.reviewer.setMaximumWidth(240)
-        self.remember_name = QCheckBox("이름 기억")
-        self.remember_name.setChecked(self.settings.value("remember_reviewer", False, type=bool))
-        self.remember_name.setToolTip(
-            "공용 PC에서는 사용하지 마세요. 검수 시작 전 이름을 확인하세요."
-        )
-        if self.remember_name.isChecked():
-            self.reviewer.setText(self.settings.value("reviewer_name", ""))
-        self.review_identity = self.reviewer.text()
-        self.reviewer.textChanged.connect(self.reviewer_typed)
-        self.reviewer.editingFinished.connect(self.commit_reviewer)
+        self.reviewer.setToolTip("이 PC에 기억되어 다음 실행에도 그대로 사용합니다.")
+        # Personal PC: the name is entered once and remembered.
+        self.reviewer.setText(self.settings.value("reviewer_name", ""))
         self.reviewer.textChanged.connect(self.remember_reviewer)
-        self.remember_name.toggled.connect(self.remember_reviewer)
         top.addWidget(self.reviewer)
-        top.addWidget(self.remember_name)
         help_button = QPushButton("도움말")
         help_button.clicked.connect(self.show_help)
         top.addWidget(help_button)
@@ -374,80 +363,18 @@ class ReviewWidget(QWidget):
         self.move(target - self.index)
 
     def remember_reviewer(self, *args):
-        remember = self.remember_name.isChecked()
-        self.settings.setValue("remember_reviewer", remember)
-        self.settings.setValue("reviewer_name", self.reviewer.text().strip() if remember else "")
+        self.settings.setValue("reviewer_name", self.reviewer.text().strip())
 
-    def blind_record(self, sample):
+    def own_blind_review(self, sample):
+        # One reviewer per PC: any independent decision on the current result is theirs.
         return bool(
             sample["review_state"]
             and sample["review_current"]
             and sample["review_origin"] == BLIND_ORIGIN
         )
 
-    def own_blind_review(self, sample):
-        name = self.review_identity.strip()
-        return self.blind_record(sample) and bool(name) and sample["reviewer"] == name
-
-    def foreign_blind_review(self, sample):
-        # The latest current blind record belongs to someone else; saving here
-        # supersedes it while its labels stay hidden.
-        return self.blind_record(sample) and sample["reviewer"] != self.review_identity.strip()
-
-    def reviewer_typed(self, name):
-        # A partly typed name must not be saved as a draft author.
-        self.timer.stop()
-        if self.loading or not self.blind.isChecked():
-            self.review_identity = name
-
-    def commit_reviewer(self):
-        """Apply a finished name in blind mode; False when the visible form changed or was kept back."""
-        name = self.reviewer.text()
-        if name == self.review_identity:
-            if self.dirty and self.auto.isChecked():
-                self.timer.start()
-            return True
-        if self.dirty or self.pending_save:
-            if self.dirty and not self.pending_save and not self.edit_reviewer:
-                # An unnamed reviewer may enter their name after judging the
-                # image. Keep these edits instead of restoring another form.
-                self.review_identity = name
-                if self.auto.isChecked():
-                    self.timer.start()
-                return True
-            self.reviewer.blockSignals(True)
-            self.reviewer.setText(self.review_identity)
-            self.reviewer.blockSignals(False)
-            self.status.setText("수정 중인 항목을 저장한 뒤 검수자 이름을 바꾸세요.")
-            return False
-        self.review_identity = name
-        if not self.items:
-            return True
-        # Time spent under the previous name is not this reviewer's effort.
-        self.effort_seconds = 0.0
-        self.last_interaction = time.monotonic()
-        sample = self.items[self.index]
-        own_blind = self.own_blind_review(sample)
-        final = json.loads(sample["reviewed_labels"]) if own_blind else {}
-        self.loading = True
-        try:
-            for field in FIELDS:
-                self.set_label_value(field, final.get(field["key"]))
-            self.reason.setPlainText(sample["reviewed_reason"] if own_blind else "")
-            self.reason_en.setText((sample["reviewed_reason_en"] if own_blind else "") or "")
-        finally:
-            self.loading = False
-        self.decision_hint.setText("라벨 선택 후 ‘저장’으로 확정하세요.")
-        self.show_progress(sample)
-        return False
-
     def show_progress(self, sample):
         state = STATES.get(sample["review_state"], "미검수")
-        if self.blind.isChecked() and self.foreign_blind_review(sample):
-            state += " · 다른 검수자"
-            self.status.setText(
-                f"다른 검수자({sample['reviewer']})의 독립 판정이 있어 자동 임시 저장을 멈춥니다. 저장할 때 확인합니다."
-            )
         self.progress.setText(f"{self.index + 1} / {len(self.items)} · {state}")
 
     def position_key(self):
@@ -467,7 +394,6 @@ class ReviewWidget(QWidget):
             return
         if self.project:
             self.settings.setValue(self.blind_key(), enabled)
-        self.review_identity = self.reviewer.text()
         self.update_summary()
         self.load_current()
 
@@ -596,23 +522,14 @@ class ReviewWidget(QWidget):
             self.reason_en.blockSignals(True)
             self.reason_en.clear()
             self.reason_en.blockSignals(False)
-        if not self.dirty:
-            self.edit_reviewer = self.review_identity.strip()
         self.dirty = True
         self.decision_hint.setText("수정 중 · ‘저장’을 눌러 확정하세요.")
         if self.auto.isChecked():
             self.timer.start()
 
     def autosave(self, asynchronous=False):
-        if not self.dirty or not self.reviewer.text().strip():
-            return
-        if self.blind.isChecked() and (
-            self.reviewer.text() != self.review_identity
-            or (self.items and self.foreign_blind_review(self.items[self.index]))
-        ):
-            # Unfinished names and another reviewer's decision wait for an explicit save.
-            return
-        self.save("DRAFT", asynchronous=asynchronous)
+        if self.dirty and self.reviewer.text().strip():
+            self.save("DRAFT", asynchronous=asynchronous)
 
     def load_current(self):
         self.effort_seconds = 0.0
@@ -970,9 +887,6 @@ class ReviewWidget(QWidget):
         ):
             return False
         blind = self.blind.isChecked()
-        # Shortcuts can save before the name field reports a finished edit.
-        if blind and self.reviewer.text() != self.review_identity and not self.commit_reviewer():
-            return False
         if not self.reviewer.text().strip() or len(self.reviewer.text()) > 120:
             self.status.setText("검수자 이름을 1~120자로 입력한 뒤 다시 저장하세요.")
             self.reviewer.setFocus()
@@ -988,22 +902,6 @@ class ReviewWidget(QWidget):
             self.notes.toggle.setChecked(True)
             self.reason.setFocus()
             return False
-        if blind and self.foreign_blind_review(sample):
-            answer = QMessageBox.question(
-                self,
-                "다른 검수자의 독립 판정",
-                f"이 항목의 최신 기록은 다른 검수자({sample['reviewer']})의 독립 판정"
-                f"({STATES.get(sample['review_state'], sample['review_state'])})입니다.\n"
-                "저장하면(임시 저장 포함) 이 기록이 최신이 됩니다. Golden Set은 최신 완료 기록만 "
-                "사용하므로 이전 판정은 이력에만 남습니다.\n\n계속 저장할까요?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                self.status.setText(
-                    "저장하지 않았습니다. 입력한 내용을 버리려면 되돌리기(Ctrl+Z)를 누르세요."
-                )
-                return False
         labels = {
             k: None if box.checkState() == Qt.CheckState.PartiallyChecked else int(box.isChecked())
             for k, box in self.boxes.items()
@@ -1153,10 +1051,7 @@ class ReviewWidget(QWidget):
                 visible = [
                     r
                     for r in history
-                    if r["origin"] == BLIND_ORIGIN
-                    and self.review_identity.strip()
-                    and r["reviewer"] == self.review_identity.strip()
-                    and r["result_hash"] == sample["result_hash"]
+                    if r["origin"] == BLIND_ORIGIN and r["result_hash"] == sample["result_hash"]
                 ]
                 hidden = len(history) - len(visible)
                 history = visible
@@ -1167,5 +1062,5 @@ class ReviewWidget(QWidget):
             if hidden:
                 text += (
                     "\n\n" if text else ""
-                ) + f"현재 검수자의 최신 결과에 해당하지 않는 기록 {hidden}건은 숨겼습니다."
+                ) + f"독립 판정 전 기록이나 이전 결과의 기록 {hidden}건은 숨겼습니다."
             QMessageBox.information(self, "검수 이력", text or "검수 이력 없음")

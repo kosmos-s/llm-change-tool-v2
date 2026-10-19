@@ -147,7 +147,7 @@ def test_default_prompt_contract_and_guideline_exceptions():
     assert "기존 JSON 라벨은 입력되지 않는다" in prompt
 
 
-def test_position_and_opt_in_name_restore_by_sample_id(imported, tmp_path, monkeypatch):
+def test_position_and_remembered_name_restore_by_sample_id(imported, tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     settings_path = str(tmp_path / "settings.ini")
     monkeypatch.setattr(
@@ -160,9 +160,9 @@ def test_position_and_opt_in_name_restore_by_sample_id(imported, tmp_path, monke
     view = window.review_widget
     until(lambda: view.task and not view.task.isRunning())
     app.processEvents()
+    # Personal use: the name is remembered without an opt-in.
     view.reviewer.setText("검수자")
-    assert view.settings.value("reviewer_name", "") == ""
-    view.remember_name.setChecked(True)
+    assert view.settings.value("reviewer_name", "") == "검수자"
     view.move(1)
     until(lambda: not view.task.isRunning())
     app.processEvents()
@@ -175,7 +175,7 @@ def test_position_and_opt_in_name_restore_by_sample_id(imported, tmp_path, monke
     app.processEvents()
     assert reopened.review_widget.reviewer.text() == "검수자"
     assert reopened.review_widget.items[reopened.review_widget.index]["id"] == sample_id
-    reopened.review_widget.remember_name.setChecked(False)
-    assert reopened.review_widget.settings.value("reviewer_name", "") == ""
+    reopened.review_widget.reviewer.setText("새 이름")
+    assert reopened.review_widget.settings.value("reviewer_name", "") == "새 이름"
     reopened.close()
     app.processEvents()
