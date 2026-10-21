@@ -1,6 +1,6 @@
 # LLM Change Tool v2 — handoff
-IN PROGRESS (2026-10-21): v0.1.12 automated acceptance check. Any agent (Claude, GPT/Codex)
-continuing this work: read docs/acceptance-0.1.12-auto.md and resume from its first step not marked 완료.
+DONE (2026-10-21): v0.1.12 automated acceptance check, all 8 steps; see docs/acceptance-0.1.12-auto.md
+for results, the open small-screen finding (A) and why release exes must be run via WMI from agent shells.
 v0.1.12 is released (PR #13, merge d72e3c9); branch fix/korean-error-messages holds unreleased work.
 Claude continuation (2026-10-18): read CLAUDE.md and docs/claude-handoff.md.
 Local inventory and final development/holdout selection artifacts already exist;
