@@ -22,8 +22,8 @@ AGENTS.md → HANDOFF.md → 이 문서 순서로 읽고 **상태가 `완료`가
 
 | # | 단계 | 상태 | 결과 |
 | --- | --- | --- | --- |
-| 1 | 배포 ZIP 내려받기·SHA256 대조·압축 해제 (`artifacts/acceptance-0.1.12/portable/`) | 대기 | |
-| 2 | 배포 exe `--self-test`, `--gui-smoke` | 대기 | |
+| 1 | 배포 ZIP 내려받기·SHA256 대조·압축 해제 (`artifacts/acceptance-0.1.12/portable/`) | 완료 | SHA256 `dd5179cc…99cf` 일치 |
+| 2 | 배포 exe `--self-test`, `--gui-smoke` | 완료 | 둘 다 통과(WMI 실행, 아래 기록 참고) |
 | 3 | 20건 프로젝트 백업을 복사본으로 복원, 원본 파일 해시 기록 | 대기 | |
 | 4 | 복사본으로 검수 흐름: 이름 입력·자동 기억, 판정 저장(초안/완료), 되돌리기, 위치 복원, 독립 판정 숨김 | 대기 | |
 | 5 | 복사본으로 Mock 재실행 → 비교 → 최종 Gate → 별도 JSON 내보내기, 원본 해시 불변 확인 | 대기 | |
@@ -40,3 +40,22 @@ AGENTS.md → HANDOFF.md → 이 문서 순서로 읽고 **상태가 `완료`가
 - 보고는 한국어로, 변경·검증 근거·사용자 PC 확인·회사 미확정 사항을 나눠 씁니다.
 
 ## 기록
+
+### 2026-10-21 · 1~2단계
+
+- 배포 ZIP과 `.sha256`의 해시가 일치했습니다.
+- **에이전트 셸에서 exe를 직접 실행하면 안 됩니다.** Claude Code 셸에서 `Start-Process`로 띄운 배포 exe는
+  자체 점검이 종료 코드 1로 끝나고 보고서가 없었습니다(10회 이상 재현). 같은 exe를 WMI로 세션 밖에서 실행하면
+  3/3 통과(2~3초)했습니다. 원인은 앱이 아니라 에이전트 실행 환경입니다. 근거는 다음과 같습니다.
+  - 같은 태그 소스를 CI와 같은 Python 3.11.9 + PyInstaller 6.22.3로 다시 빌드했습니다. 배포 exe와는
+    PE 시각·체크섬 8바이트만 다르고 앱 코드·내장 모듈·DLL 구성이 같았습니다.
+  - 그런데도 같은 바이너리가 실행할 때마다 통과·실패가 바뀌었고, 실패한 실행에는 파이썬 오류 기록이 없었습니다.
+    외부에서 강제 종료된 것으로 보입니다.
+  - 배포 exe를 검사하려면 아래처럼 세션 밖에서 실행하세요.
+    ```powershell
+    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"<exe>" --self-test --report "<절대경로>.json"'; CurrentDirectory = '<폴더>' }
+    ```
+    프로세스가 끝날 때까지 기다린 뒤 보고서 JSON을 확인합니다.
+- `--gui-smoke`는 셸·WMI 모두 통과했습니다.
+- 이 진단에서 `.venv`에 `pyinstaller==6.22.3`을 설치했습니다(`build_windows.bat`과 같은 버전).
+  실패한 실행이 남긴 `%TEMP%\llm-change-selftest-*` 20개는 삭제했습니다.
