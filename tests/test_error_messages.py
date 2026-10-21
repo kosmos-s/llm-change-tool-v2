@@ -39,6 +39,20 @@ def test_every_english_error_has_a_korean_message():
     assert missing == []
 
 
+def test_restoring_a_non_database_file_explains_next_step(tmp_path):
+    import pytest
+
+    from llm_change_tool.core.projects import restore_project
+
+    bad = tmp_path / "not-a-backup.sqlite3"
+    bad.write_bytes(b"not sqlite")
+    with pytest.raises(Exception) as caught:
+        restore_project(bad, tmp_path / "restored")
+    message = explain_error(str(caught.value))
+    assert not message.startswith(FALLBACK) and "백업 파일을 다시 선택" in message
+    assert not (tmp_path / "restored").exists()
+
+
 def test_http_client_errors_have_specific_guidance():
     assert "http_404" in explain_error("http_404")
     assert explain_error("http_401") != explain_error("http_404")

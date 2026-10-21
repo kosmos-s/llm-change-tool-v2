@@ -164,6 +164,8 @@ def explain_error(code):
     for prefix, message in MESSAGES.items():
         if code.startswith(prefix):
             return message
+    if "file is not a database" in code:
+        return "선택한 파일이 프로젝트 DB 백업이 아니거나 손상되었습니다. 프로젝트 폴더의 backups에 있는 .sqlite3 백업 파일을 다시 선택하세요."
     if "database is locked" in code:
         return "다른 작업이 데이터를 저장하고 있습니다. 잠시 후 다시 시도하세요."
     if "No such file" in code or code == "FileNotFoundError":
