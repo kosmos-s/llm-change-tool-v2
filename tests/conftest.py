@@ -1,6 +1,10 @@
 import json
+import os
 
-import pytest
+# Same headless Qt as CI, also when tests start from the VS Code test panel.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest  # noqa: E402
 from PIL import Image, ImageDraw
 
 from llm_change_tool.core.datasets import import_dataset

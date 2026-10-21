@@ -1,0 +1,27 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"],
+  "python.analysis.extraPaths": ["${workspaceFolder}/src"],
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.rulers": [100]
+  },
+  "code-runner.executorMap": {
+    "python": "& \"$workspaceRoot/.venv/Scripts/python.exe\" -u"
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    ".pytest_cache": true,
+    ".ruff_cache": true
+  },
+  "search.exclude": {
+    "artifacts": true,
+    "local-reference": true,
+    "dataset_sample": true,
+    ".venv": true
+  }
+}
