@@ -2,6 +2,7 @@
 DONE (2026-10-21): v0.1.12 automated acceptance check, all 8 steps; see docs/acceptance-0.1.12-auto.md
 for results, the open small-screen finding (A) and why release exes must be run via WMI from agent shells.
 v0.1.13 released on user request (2026-10-21): Korean error guidance, corrupt-backup restore hint, VS Code config (.vscode/).
+v0.1.14 released on user request (2026-10-21): larger review images (finding A), blind Ctrl+0 "rest unchanged", visible undecided boxes.
 Claude continuation (2026-10-18): read CLAUDE.md and docs/claude-handoff.md.
 Local inventory and final development/holdout selection artifacts already exist;
 check their current state before repeating preparation. See the continuation note
@@ -82,9 +83,11 @@ First reproduce against current code; skip already-fixed findings.
 
 For new coding tasks: add regression tests, run relevant/full required checks and verify the affected end-to-end flow with Mock. Commit on a separate branch and open a PR when requested. Main merge/release and paid API calls need an explicit user request.
 
-## Pending company decisions (no answer as of last conversation)
-Official F1 vs F2 metric, positive class, evaluation data/performer;
-3,000-sample selection scope and split; meaning of FN/FP and filename suffixes;
+## Pending company decisions
+Answered (company reply relayed by user, 2026-10-21): any 3,000 samples are acceptable;
+the app's existing balanced unique-candidate selection satisfies this. Not a paid-run approval.
+Still pending: official F1 vs F2 metric, positive class, evaluation data/performer;
+meaning of FN/FP and filename suffixes;
 final development/delivery scope and timeline.
 Historical document mismatch: proposal F1 0.80→0.85; company PDF F2 0.80→0.85 and other F1 references. Verify source pages when files available.
 Internal work proceeds under the provisional protocol above while these remain

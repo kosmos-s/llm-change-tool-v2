@@ -71,6 +71,27 @@ def test_navigation_small_window_image_fit_and_notes_do_not_overlap(imported):
     app.processEvents()
 
 
+def test_review_page_gives_page_heading_and_idle_status_bar_height_to_images(imported):
+    app = QApplication.instance() or QApplication([])
+    project, _, _ = ready(imported)
+    window = MainWindow()
+    window.resize(1440, 820)
+    window.show()
+    window.set_project(project)
+    until(lambda: window.review_widget.task and not window.review_widget.task.isRunning())
+    window.navigate(2)
+    app.processEvents()
+    hidden = [window.page_title, window.page_hint, window.project_chip, window.activity_progress]
+    assert not any(widget.isVisible() for widget in hidden)
+    assert window.review_widget.left.height() > 300
+    window.navigate(3)
+    app.processEvents()
+    assert all(widget.isVisible() for widget in hidden)
+    assert window.page_title.text() == "품질 · 내보내기"
+    window.close()
+    app.processEvents()
+
+
 def test_errors_visible_on_origin_page_and_settings_are_discoverable(tmp_path):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()

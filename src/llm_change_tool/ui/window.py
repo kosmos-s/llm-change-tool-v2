@@ -168,6 +168,15 @@ class MainWindow(ProjectWindow):
         self.activity_progress.setTextVisible(False)
         self.activity_progress.setAccessibleName("현재 백그라운드 작업 진행률")
         body.addWidget(self.activity_progress)
+        # The review tab is locked while a task runs, so these only take image height there.
+        self.review_hidden = (
+            self.page_title,
+            self.page_hint,
+            self.project_chip,
+            self.activity,
+            self.activity_percent,
+            self.activity_progress,
+        )
         row.addLayout(body, 1)
         self.setCentralWidget(shell)
         self.tabs.currentChanged.connect(self.update_navigation)
@@ -191,6 +200,8 @@ class MainWindow(ProjectWindow):
             return
         self.page_title.setText(PAGES[index][0])
         self.page_hint.setText(PAGES[index][1])
+        for widget in self.review_hidden:
+            widget.setVisible(index != 2)
         for i, button in enumerate(self.nav_buttons):
             button.setChecked(i == index)
 
