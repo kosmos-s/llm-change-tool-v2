@@ -2,6 +2,7 @@
 DONE (2026-10-21): v0.1.12 automated acceptance check, all 8 steps; see docs/acceptance-0.1.12-auto.md
 for results, the open small-screen finding (A) and why release exes must be run via WMI from agent shells.
 v0.1.13 released on user request (2026-10-21): Korean error guidance, corrupt-backup restore hint, VS Code config (.vscode/).
+Unreleased branch fix/review-image-space: larger review images (finding A), blind Ctrl+0 "rest unchanged", visible undecided boxes.
 Claude continuation (2026-10-18): read CLAUDE.md and docs/claude-handoff.md.
 Local inventory and final development/holdout selection artifacts already exist;
 check their current state before repeating preparation. See the continuation note

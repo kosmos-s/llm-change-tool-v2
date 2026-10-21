@@ -53,6 +53,8 @@ QCheckBox::indicator { width: 21px; height: 21px; background: #ffffff;
     border: 2px solid #708795; border-radius: 5px; }
 QCheckBox::indicator:hover { border-color: #268a85; background: #edf6f5; }
 QCheckBox::indicator:checked { background: #126b65; border-color: #126b65; image: url("__CHECKMARK__"); }
+/* Undecided (blind review) must not look like "no change". */
+QCheckBox::indicator:indeterminate { background: #fff2d5; border-color: #c7861d; image: url("__UNDECIDED__"); }
 QCheckBox:focus { color: #126b65; }
 QCheckBox[attention="true"] { color: #9b3036; background: #ffedf0;
     border: 1px solid #d87d84; border-radius: 7px; padding: 8px 10px; font-weight: 700; }
@@ -103,8 +105,9 @@ def apply_theme():
     app.setFont(font)
     chevron = files("llm_change_tool").joinpath("resources/ui/chevron-down.svg")
     checkmark = files("llm_change_tool").joinpath("resources/ui/checkmark.svg")
+    undecided = files("llm_change_tool").joinpath("resources/ui/undecided.svg")
     app.setStyleSheet(
-        STYLE.replace("__CHEVRON__", str(chevron).replace("\\", "/")).replace(
-            "__CHECKMARK__", str(checkmark).replace("\\", "/")
-        )
+        STYLE.replace("__CHEVRON__", str(chevron).replace("\\", "/"))
+        .replace("__CHECKMARK__", str(checkmark).replace("\\", "/"))
+        .replace("__UNDECIDED__", str(undecided).replace("\\", "/"))
     )

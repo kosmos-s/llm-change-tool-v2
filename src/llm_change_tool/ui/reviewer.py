@@ -134,7 +134,8 @@ class ReviewWidget(QWidget):
         splitter = QSplitter()
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(12)
-        viewer, vl = card("시점 비교", "휠로 확대 · 드래그로 이동 · 두 이미지가 함께 움직입니다.")
+        # No card title: on 1440×900-class screens every line taken here shrinks the images.
+        viewer, vl = card("")
         viewer.setMinimumWidth(300)
         titles = QHBoxLayout()
         titles.addWidget(text_label("T1  과거 영상", "eyebrow"), 1)
@@ -153,7 +154,9 @@ class ReviewWidget(QWidget):
             button = QPushButton(name)
             button.clicked.connect(fn)
             controls.addWidget(button)
-        controls.addStretch()
+        controls.addWidget(
+            text_label("휠로 확대 · 드래그로 이동 · 두 이미지가 함께 움직입니다.", "muted"), 1
+        )
         self.diff = QCheckBox("차이 영상")
         self.diff.toggled.connect(self.show_images)
         controls.addWidget(self.diff)
@@ -177,6 +180,13 @@ class ReviewWidget(QWidget):
         ]:
             button.clicked.connect(lambda checked=False, source=source: self.apply_labels(source))
             choices.addWidget(button)
+        self.rest_unchanged_button = QPushButton("나머지 변화 없음")
+        self.rest_unchanged_button.setToolTip(
+            "Ctrl+0 · 아직 미확정인 라벨만 ‘없음’으로 정합니다. 변화가 보이는 라벨은 먼저 직접 표시하세요."
+        )
+        self.rest_unchanged_button.clicked.connect(self.mark_undecided_unchanged)
+        self.rest_unchanged_button.hide()
+        choices.addWidget(self.rest_unchanged_button)
         pl.addLayout(choices)
         self.decision_hint = text_label("라벨 선택 후 ‘저장’으로 확정하세요.", "muted")
         pl.addWidget(self.decision_hint)
@@ -305,6 +315,7 @@ class ReviewWidget(QWidget):
             ("Ctrl+Z", self.undo),
             ("F", self.left.fit),
             ("Ctrl+F", self.find_sample),
+            ("Ctrl+0", self.mark_undecided_unchanged),
         ]:
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(fn)
@@ -328,7 +339,9 @@ class ReviewWidget(QWidget):
                 "Ctrl+S 저장 · Ctrl+Enter 저장 후 다음\n"
                 "Alt+←/→ 이동 · Ctrl+Z 되돌리기 · Ctrl+F 항목 찾기 · F 화면 맞춤\n\n"
                 "독립 판정: 원본·AI 라벨을 숨기고 미확정에서 시작합니다. 모든 라벨과\n"
-                "판정 근거를 직접 입력해야 완료되며, 기록에 독립 판정으로 남습니다.\n\n"
+                "판정 근거를 직접 입력해야 완료되며, 기록에 독립 판정으로 남습니다.\n"
+                "변화가 보이는 라벨만 표시한 뒤 Ctrl+0(나머지 변화 없음)으로 남은 미확정을\n"
+                "‘없음’으로 정할 수 있습니다.\n\n"
                 "최신 기준: 도로 표식은 0. 일반 촬영조건 차이는 제외합니다.\n"
                 "건물 기울임·수목 계절 변화·농경지 생육 단계는 지침의 예외를 확인하세요.\n"
                 "면적 기준: 9분할 한 칸의 인공물 1/2, 수목·산림·농경지 1/4.\n"
@@ -540,7 +553,11 @@ class ReviewWidget(QWidget):
         self.loading = True
         self.panel_scroll.verticalScrollBar().setValue(0)
         self.remember_position()
-        self.decision_hint.setText("라벨 선택 후 ‘저장’으로 확정하세요.")
+        self.decision_hint.setText(
+            "노란 칸(–)은 미확정입니다. 변화가 보이는 라벨만 표시하고 Ctrl+0으로 나머지를 ‘없음’으로 정하세요."
+            if self.blind.isChecked()
+            else "라벨 선택 후 ‘저장’으로 확정하세요."
+        )
         self.loaded_sample_id = None
         self.images = None
         for view in (self.left, self.right):
@@ -762,6 +779,11 @@ class ReviewWidget(QWidget):
         self.ai_button.setEnabled(
             ready and not blind and bool(self.items[self.index]["prediction"])
         )
+        # Blind mode cannot use source/AI labels; that row space goes to the bulk "none".
+        self.original_button.setVisible(not blind)
+        self.ai_button.setVisible(not blind)
+        self.rest_unchanged_button.setVisible(blind)
+        self.rest_unchanged_button.setEnabled(ready)
         self.edit_button.setEnabled(ready)
         self.diff.setEnabled(ready)
         self.flicker.setEnabled(ready)
@@ -841,6 +863,18 @@ class ReviewWidget(QWidget):
                 return
             self.index = max(0, target)
             self.load_current()
+
+    def mark_undecided_unchanged(self):
+        # Only undecided labels: what the reviewer already marked as changed stays.
+        if (
+            not self.blind.isChecked()
+            or not self.items
+            or self.loaded_sample_id != self.items[self.index]["id"]
+        ):
+            return
+        for box in self.boxes.values():
+            if box.checkState() == Qt.CheckState.PartiallyChecked:
+                box.setCheckState(Qt.CheckState.Unchecked)
 
     def set_label_value(self, field, value):
         box = self.boxes[field["key"]]

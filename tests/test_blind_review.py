@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -152,6 +153,52 @@ def test_blind_mode_hides_source_seeded_drafts_and_records_decision(imported):
     app.processEvents()
     assert view.labels.item(0, 1).text() in ("변화", "없음")
     assert view.original_button.isEnabled()
+    window.close()
+    app.processEvents()
+
+
+def test_blind_rest_unchanged_keeps_marked_changes_and_still_needs_reason(imported):
+    app = QApplication.instance() or QApplication([])
+    project, _, run = ready(imported)
+    seed_source_drafts(project, run)
+    window = MainWindow()
+    window.show()
+    window.set_project(project)
+    view = window.review_widget
+    until(lambda: view.task and not view.task.isRunning())
+    view.reviewer.setText("tester")
+    view.mark_undecided_unchanged()  # Normal mode: no effect.
+    assert view.boxes["tree"].checkState() != Qt.CheckState.PartiallyChecked
+    assert view.rest_unchanged_button.isHidden() and not view.original_button.isHidden()
+    view.blind.setChecked(True)
+    until(lambda: not view.task.isRunning())
+    app.processEvents()
+    assert not view.rest_unchanged_button.isHidden() and view.rest_unchanged_button.isEnabled()
+    assert view.original_button.isHidden() and view.ai_button.isHidden()
+    assert "Ctrl+0" in view.decision_hint.text()
+    # Undecided needs its own look; unstyled it is identical to "no change".
+    sheet = app.styleSheet()
+    assert "indicator:indeterminate" in sheet and "__UNDECIDED__" not in sheet
+    undecided = sheet.split("indicator:indeterminate")[1].split('url("')[1].split('")')[0]
+    assert Path(undecided).is_file()
+    sample_id = view.items[view.index]["id"]
+    view.boxes["tree"].setCheckState(Qt.CheckState.Checked)
+    view.rest_unchanged_button.click()
+    assert view.boxes["tree"].checkState() == Qt.CheckState.Checked
+    assert not any(
+        box.checkState() == Qt.CheckState.PartiallyChecked for box in view.boxes.values()
+    )
+    assert not view.save()
+    assert "근거" in view.decision_hint.text()
+    view.reason.setPlainText("T2에서 수목 증가")
+    assert view.save()
+    latest = review_history(project, run, sample_id)[-1]
+    assert latest["origin"] == BLIND_ORIGIN
+    assert json.loads(latest["labels"]) == {**dict.fromkeys(KEYS, 0), "tree": 1}
+    view.blind.setChecked(False)
+    until(lambda: not view.task.isRunning())
+    app.processEvents()
+    assert not view.original_button.isHidden() and view.rest_unchanged_button.isHidden()
     window.close()
     app.processEvents()
 

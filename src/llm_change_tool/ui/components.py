@@ -106,7 +106,8 @@ def card(title, description=""):
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(20, 18, 20, 18)
     layout.setSpacing(12)
-    layout.addWidget(text_label(title, "sectionTitle"))
+    if title:
+        layout.addWidget(text_label(title, "sectionTitle"))
     if description:
         layout.addWidget(text_label(description, "muted"))
     return frame, layout
