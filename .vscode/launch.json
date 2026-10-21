@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "앱 실행",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "llm_change_tool",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "앱 실행 · 프로젝트 폴더 열기",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "llm_change_tool",
+      "args": ["--project", "${input:projectFolder}"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "자체 점검 (self-test)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "llm_change_tool",
+      "args": ["--self-test"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "projectFolder",
+      "type": "promptString",
+      "description": "열 프로젝트 폴더 경로 (project.db가 있는 폴더)"
+    }
+  ]
+}

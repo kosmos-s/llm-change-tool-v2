@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}",
+    "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] }
+  },
+  "tasks": [
+    {
+      "label": "설치 (setup.bat)",
+      "type": "process",
+      "command": "${workspaceFolder}/setup.bat",
+      "problemMatcher": []
+    },
+    {
+      "label": "검사: ruff",
+      "type": "shell",
+      "command": ".venv/Scripts/python.exe -m ruff check . ; .venv/Scripts/python.exe -m ruff format --check .",
+      "problemMatcher": []
+    },
+    {
+      "label": "검사: 전체 테스트",
+      "type": "shell",
+      "command": ".venv/Scripts/python.exe -m pytest -q",
+      "options": { "env": { "QT_QPA_PLATFORM": "offscreen" } },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "검사: 커밋 전 비밀정보",
+      "type": "shell",
+      "command": ".venv/Scripts/python.exe scripts/check_secrets.py",
+      "problemMatcher": []
+    }
+  ]
+}
